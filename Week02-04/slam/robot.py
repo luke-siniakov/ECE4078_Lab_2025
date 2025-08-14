@@ -77,13 +77,18 @@ class Robot:
         th = self.state[2]
 
         #edits: 
-        if abs(ang_vel) < 1e-9:  # Straight line
-            DFx[0, 2] = -lin_vel * np.sin(th) * dt
-            DFx[1, 2] =  lin_vel * np.cos(th) * dt
-        else:
+        if abs(ang_vel) < 1e-12:  # Straight line
+            #DFx[0, 2] = -lin_vel * np.sin(th) * dt
+            #DFx[1, 2] =  lin_vel * np.cos(th) * dt
+            DFx[0,2]=lin_vel*np.cos(th)*dt
+            DFx[1,2]=lin_vel*np.sin(th)*dt
+        else: #turning
             th2 = th + ang_vel * dt
-            DFx[0, 2] = (lin_vel/ang_vel) * (np.cos(th2) - np.cos(th))
-            DFx[1, 2] = (lin_vel/ang_vel) * (np.sin(th2) - np.sin(th))
+            
+            #DFx[0, 2] = (lin_vel/ang_vel) * (np.cos(th2) - np.cos(th))
+            #DFx[1, 2] = (lin_vel/ang_vel) * (np.sin(th2) - np.sin(th))
+            DFx[0, 2]=(lin_vel/ang_vel) *(-np.sin(th)+np.sin(th2))
+            DFx[1,2]=(lin_vel/ang_vel) *(np.cos(th)-np.cos(th2))
 
         return DFx
 

@@ -68,6 +68,7 @@ class Operate:
         self.img = np.zeros([240,320,3], dtype=np.uint8)
         self.aruco_img = np.zeros([240,320,3], dtype=np.uint8)
         self.bg = pygame.image.load('pics/gui_mask.jpg')
+        self.tank_turning = True
 
     # wheel control
     def control(self):    
@@ -197,21 +198,76 @@ class Operate:
     # keyboard teleoperation        
     def update_keyboard(self):
         for event in pygame.event.get():
-            ########### replace with your M1 codes ###########
-            # drive forward
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_UP:
-                self.command['motion'] = [1, 0]                
-            # drive backward
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_DOWN:
-                self.command['motion'] = [-1, 0]
-            # turn left
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
-                self.command['motion'] = [1,1]
-            # drive right
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
-                self.command['motion'] = [1,-1]
-            ####################################################
-            # stop
+            ############### add your codes below ###############
+            
+            """
+            I chose to do both Tank style turning and car style turning. 
+            UP,DOWN,LEFT,RIGHT    for tank turning
+            W,A,S,D               for car style
+            """
+            if event.type == pygame.KEYDOWN:
+              
+                # mode toggles
+                if event.key == pygame.K_1:
+                    self.tank_turning = True
+                    self.notification = 'Mode: Tank turning'
+                elif event.key == pygame.K_2:
+                    self.tank_turning = False
+                    self.notification = 'Mode: Car turning'
+
+            # global actions
+                elif event.key == pygame.K_SPACE:
+                    self.command['motion'] = [0, 0]
+                elif event.key == pygame.K_i:
+                    self.command['save_image'] = True
+                elif event.key == pygame.K_ESCAPE:
+                    self.quit = True
+
+            # motion keys
+                elif self.tank_turning:
+                    if event.key == pygame.K_UP:
+                        self.command['motion'] = [1, 0]       # forward
+                    elif event.key == pygame.K_DOWN:
+                        self.command['motion'] = [-1, 0]      # backward
+                    elif event.key == pygame.K_LEFT:
+                        self.command['motion'] = [0, 2]      # turn left in place
+                    elif event.key == pygame.K_RIGHT:
+                        self.command['motion'] = [0, -2]     # turn right in place
+                else:
+                    if event.key == pygame.K_UP:
+                        self.command['motion'] = [1, 0]       # forward
+                    elif event.key == pygame.K_DOWN:
+                        self.command['motion'] = [-1, 0]      # backward
+                    elif event.key == pygame.K_LEFT:
+                        self.command['motion'] = [1.5, 2]      # forward-left (car)
+                    elif event.key == pygame.K_RIGHT:
+                        self.command['motion'] = [1.5, -2]     # forward-right (car)
+
+    
+
+        # --- optional: stop on key release of movement keys ---
+            if event.type == pygame.KEYUP and event.key in (
+                pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT):
+                self.command['motion'] = [0, 0]
+
+    # keyboard teleoperation        
+    # def update_keyboard(self):
+    #     for event in pygame.event.get():
+    #         ########### replace with your M1 codes ###########
+    #         # drive forward
+    #         if event.type == pygame.KEYDOWN and event.key == pygame.K_UP:
+    #             pass # TODO: replace with your M1 code to make the robot drive forward
+    #         # drive backward
+    #         elif event.type == pygame.KEYDOWN and event.key == pygame.K_DOWN:
+    #             pass # TODO: replace with your M1 code to make the robot drive backward
+    #         # turn left
+    #         elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
+    #             pass # TODO: replace with your M1 code to make the robot turn left
+    #         # drive right
+    #         elif event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
+    #             pass # TODO: replace with your M1 code to make the robot turn right
+    #         ####################################################
+    #         # stop
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 self.command['motion'] = [0, 0]
             # save image
