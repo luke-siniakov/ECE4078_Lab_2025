@@ -75,8 +75,15 @@ class Robot:
 
         dt = drive_meas.dt
         th = self.state[2]
-        
-        # TODO: add your codes here to compute DFx using lin_vel, ang_vel, dt, and th
+
+        #edits: 
+        if abs(ang_vel) < 1e-9:  # Straight line
+            DFx[0, 2] = -lin_vel * np.sin(th) * dt
+            DFx[1, 2] =  lin_vel * np.cos(th) * dt
+        else:
+            th2 = th + ang_vel * dt
+            DFx[0, 2] = (lin_vel/ang_vel) * (np.cos(th2) - np.cos(th))
+            DFx[1, 2] = (lin_vel/ang_vel) * (np.sin(th2) - np.sin(th))
 
         return DFx
 
@@ -125,6 +132,25 @@ class Robot:
         Jac2 = np.zeros((3,2))
         
         # TODO: add your codes here to compute Jac2 using lin_vel, ang_vel, dt, th, and th2
+        eps = 1e-9
+        if abs(ang_vel) < eps: #if robot is not turning
+            Jac2[0, 0] = dt * np.cos(th)                 
+            Jac2[1, 0] = dt * np.sin(th)                 
+
+            Jac2[0, 1] = -0.5 * lin_vel * dt**2 * np.sin(th)  
+            Jac2[1, 1] =  0.5 * lin_vel * dt**2 * np.cos(th)   
+            Jac2[2, 1] = dt                              
+        else:
+            sin_d = np.sin(th2) - np.sin(th)
+            cos_d = -np.cos(th2) + np.cos(th)
+
+            Jac2[0, 0] = sin_d / ang_vel                       
+            Jac2[1, 0] = cos_d /ang_vel                       
+            Jac2[2, 0] = 0.0                            
+
+            Jac2[0, 1] = lin_vel * ((dt * ang_vel * np.cos(th2) - sin_d) / (ang_vel**2))  
+            Jac2[1, 1] = lin_vel * ((dt * ang_vel * np.sin(th2) - cos_d) / (ang_vel**2)) 
+            Jac2[2, 1] = dt                                            
 
         # Derivative of x,y,theta w.r.t. left_speed, right_speed
         Jac = Jac2 @ Jac1

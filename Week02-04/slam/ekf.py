@@ -88,9 +88,12 @@ class EKF:
     def predict(self, raw_drive_meas):
 
         F = self.state_transition(raw_drive_meas)
-        x = self.get_state_vector()
+        # edits below:
+        self.robot.drive(raw_drive_meas)
 
-        # TODO: add your codes here to complete the prediction step
+        Q = self.predict_covariance(raw_drive_meas)
+
+        self.P = F @ self.P @ F.T + Q
 
     # the update step of EKF
     def update(self, measurements):
@@ -113,8 +116,18 @@ class EKF:
         H = self.robot.derivative_measure(self.markers, idx_list)
 
         x = self.get_state_vector()
+        
+        # EKF update equations
+        y = z - z_hat
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
 
-        # TODO: add your codes here to compute the updated x
+        x_new = x + K @ y
+        P_new = (np.eye(len(x)) - K @ H) @ self.P
+
+        # Update the state and covariance
+        self.set_state_vector(x_new)
+        self.P = P_new
 
 
     def state_transition(self, raw_drive_meas):
@@ -225,7 +238,7 @@ class EKF:
         canvas = cv2.ellipse(canvas, start_point_uv, 
                     (int(axes_len[0]*m2pixel), int(axes_len[1]*m2pixel)),
                     angle, 0, 360, (0, 30, 56), 1)
-        # draw landmards
+        # draw landmarks
         if self.number_landmarks() > 0:
             for i in range(len(self.markers[0,:])):
                 xy = (lms_xy[0, i], lms_xy[1, i])
