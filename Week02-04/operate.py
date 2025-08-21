@@ -205,8 +205,11 @@ class Operate:
             UP,DOWN,LEFT,RIGHT    for tank turning
             W,A,S,D               for car style
             """
+             
+
             if event.type == pygame.KEYDOWN:
               
+
                 # mode toggles
                 if event.key == pygame.K_1:
                     self.tank_turning = True
@@ -239,9 +242,9 @@ class Operate:
                     elif event.key == pygame.K_DOWN:
                         self.command['motion'] = [-1, 0]      # backward
                     elif event.key == pygame.K_LEFT:
-                        self.command['motion'] = [1.5, 2]      # forward-left (car)
+                        self.command['motion'] = [1, 2]      # forward-left (car)
                     elif event.key == pygame.K_RIGHT:
-                        self.command['motion'] = [1.5, -2]     # forward-right (car)
+                        self.command['motion'] = [1, -2]     # forward-right (car)
 
     
 
