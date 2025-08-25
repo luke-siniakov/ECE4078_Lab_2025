@@ -19,6 +19,14 @@ class EKF:
         self.markers = np.zeros((2,0))
         self.taglist = []
 
+        #Covariance update
+        self.q_scale_lin = 0.8 # < 1 = trust model more for x,y ; > 1 = trust less
+        self.q_scale_ang  = 0.8 
+        self.q_landmark   = 0.0
+
+        self.r_scale      = 0.6   # < 1 = trust camera more; > 1 = trust it less (global)
+        self.gate_chi2    = 5.991 # 95% χ² for 2D residual (per landmark)
+
         # Covariance matrix
         self.P = np.zeros((3,3))
         self.init_lm_cov = 1e3
@@ -108,7 +116,7 @@ class EKF:
         z = np.concatenate([lm.position.reshape(-1,1) for lm in measurements], axis=0)
         R = np.zeros((2*len(measurements),2*len(measurements)))
         for i in range(len(measurements)):
-            R[2*i:2*i+2,2*i:2*i+2] = measurements[i].covariance
+            R[2*i:2*i+2,2*i:2*i+2] = measurements[i].covariance*self.r_scale
 
         # Compute own measurements
         z_hat = self.robot.measure(self.markers, idx_list)
@@ -137,10 +145,14 @@ class EKF:
         return F
     
     def predict_covariance(self, raw_drive_meas):
-        n = self.number_landmarks()*2 + 3
-        Q = np.zeros((n,n))
-        Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas)+ 0.01*np.eye(3)
-        return Q
+            n = self.number_landmarks()*2 + 3
+            Q = np.zeros((n,n))
+
+            Q_temp = self.robot.covariance_drive(raw_drive_meas)
+            S = np.diag([self.q_scale_lin, self.q_scale_lin, self.q_scale_ang])
+            Q[0:3,0:3] = S @ Q_temp @ S.T +  0.001*np.eye(3)
+            
+            return Q
 
     def add_landmarks(self, measurements):
         if not measurements:
@@ -289,5 +301,3 @@ class EKF:
         else:
             angle = 0
         return (axes_len[0], axes_len[1]), angle
-
- 
