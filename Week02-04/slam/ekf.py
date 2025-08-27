@@ -21,15 +21,14 @@ class EKF:
 
         #Covariance update
         self.q_scale_lin = 0.8 # < 1 = trust model more for x,y ; > 1 = trust less
-        self.q_scale_ang  = 0.8 
+        self.q_scale_ang  = 0.6 
         self.q_landmark   = 0.0
 
-        self.r_scale      = 0.6   # < 1 = trust camera more; > 1 = trust it less (global)
-        self.gate_chi2    = 5.991 # 95% χ² for 2D residual (per landmark)
+        self.r_scale      = 0.5   # < 1 = trust camera more; > 1 = trust it less (global)
 
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 1e3
+        self.init_lm_cov = 4.0
         self.robot_init_state = None
         self.lm_pics = []
         for i in range(1, 11):
@@ -74,7 +73,14 @@ class EKF:
             tag = []
             for lm in measurements:
                 if lm.tag in self.taglist:
+                    #lm_new = np.concatenate((lm_new, lm.position), axis=1) #EDIT MADE (replaced under)
+                    ########################### EDIT MADE #########################
+                    R_bc = np.array([[np.cos(self.robot.cam_yaw), -np.sin(self.robot.cam_yaw)],
+                    [np.sin(self.robot.cam_yaw),  np.cos(self.robot.cam_yaw)]])
+                    t_bc = self.robot.cam_offset.reshape(2,1)
+                    lm_b = R_bc @ lm.position + t_bc
                     lm_new = np.concatenate((lm_new, lm.position), axis=1)
+                    ############################# EDIT MADE #########################
                     tag.append(int(lm.tag))
                     lm_idx = self.taglist.index(lm.tag)
                     lm_prev = np.concatenate((lm_prev,self.markers[:,lm_idx].reshape(2, 1)), axis=1)
@@ -168,8 +174,19 @@ class EKF:
                 # ignore known tags
                 continue
             
-            lm_bff = lm.position
-            lm_inertial = robot_xy + R_theta @ lm_bff
+            #lm_bff = lm.position #EDIT MADE (replaced under)
+            #lm_inertial = robot_xy + R_theta @ lm_bff
+
+            ######################### EDIT MADE #########################
+            R_bc = np.array([[np.cos(self.robot.cam_yaw), -np.sin(self.robot.cam_yaw)],
+                 [np.sin(self.robot.cam_yaw),  np.cos(self.robot.cam_yaw)]])
+            t_bc = self.robot.cam_offset.reshape(2,1)
+
+            lm_c = lm.position                  # camera frame
+            lm_b = R_bc @ lm_c + t_bc           # base frame
+            lm_inertial = robot_xy + R_theta @ lm_b
+            ######################### EDIT MADE ^ #########################
+
 
             self.taglist.append(int(lm.tag))
             self.markers = np.concatenate((self.markers, lm_inertial), axis=1)

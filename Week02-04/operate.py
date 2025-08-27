@@ -75,10 +75,10 @@ class Operate:
 
         #Covariance update
         self.q_scale_lin = 0.8 # < 1 = trust model more for x,y ; > 1 = trust less
-        self.q_scale_ang  = 0.8 
+        self.q_scale_ang  = 0.6 
         self.q_landmark   = 0.0
 
-        self.r_scale      = 0.6   # < 1 = trust camera more; > 1 = trust it less (global)
+        self.r_scale      = 0.5   # < 1 = trust camera more; > 1 = trust it less (global)
 
 
     # wheel control
@@ -146,7 +146,9 @@ class Operate:
             scale /= 2
         fileB = "{}baseline.txt".format(datadir)  
         baseline = np.loadtxt(fileB, delimiter=',')
-        robot = Robot(baseline, scale, camera_matrix, dist_coeffs)
+        robot = Robot(baseline, scale, camera_matrix, dist_coeffs) 
+        robot.cam_offset = np.array([[0.035], [0]])  # 6 cm forward, 1 cm to the right (=> y_left = -0.01) #EDIT MADE (ADDED)
+        robot.cam_yaw    = 0                     # 5 degrees in radians #EDIT MADE (ADDED)
         return EKF(robot)
 
     # save SLAM map
@@ -265,9 +267,9 @@ class Operate:
                     if event.key == pygame.K_DOWN:
                         self.command['motion'] = [-self.speedCoeff, 0]
                     if event.key == pygame.K_LEFT:
-                        self.command['motion'] = [self.speedCoeff, self.speedCoeff*5]
+                        self.command['motion'] = [self.speedCoeff*2, self.speedCoeff*3]
                     if event.key == pygame.K_RIGHT:
-                        self.command['motion'] = [self.speedCoeff, -self.speedCoeff*5]
+                        self.command['motion'] = [self.speedCoeff*2, -self.speedCoeff*3]
 
                 # SLAM toggle
                 if event.key == pygame.K_RETURN:
