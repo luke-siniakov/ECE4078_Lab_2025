@@ -162,7 +162,7 @@ class Robot:
         Jac2 = np.zeros((3,2))
         
         # TODO: add your codes here to compute Jac2 using lin_vel, ang_vel, dt, th, and th2
-        eps = 1e-9
+        eps = 1e-6
         if abs(ang_vel) < eps: #if robot is not turning
             Jac2[0, 0] = dt * np.cos(th)                 
             Jac2[1, 0] = dt * np.sin(th)                 

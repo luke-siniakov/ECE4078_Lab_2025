@@ -28,7 +28,7 @@ class EKF:
 
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 4.0
+        self.init_lm_cov = 0.2
         self.robot_init_state = None
         self.lm_pics = []
         for i in range(1, 11):
@@ -44,7 +44,7 @@ class EKF:
         self.taglist = []
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 1e3
+        self.init_lm_cov = 0.2
         self.robot_init_state = None
 
     def number_landmarks(self):
@@ -79,7 +79,7 @@ class EKF:
                     [np.sin(self.robot.cam_yaw),  np.cos(self.robot.cam_yaw)]])
                     t_bc = self.robot.cam_offset.reshape(2,1)
                     lm_b = R_bc @ lm.position + t_bc
-                    lm_new = np.concatenate((lm_new, lm.position), axis=1)
+                    lm_new = np.concatenate((lm_new, lm_b), axis=1)
                     ############################# EDIT MADE #########################
                     tag.append(int(lm.tag))
                     lm_idx = self.taglist.index(lm.tag)
@@ -134,10 +134,12 @@ class EKF:
         # EKF update equations
         y = z - z_hat
         S = H @ self.P @ H.T + R
-        K = self.P @ H.T @ np.linalg.inv(S)
+        #K = self.P @ H.T @ np.linalg.inv(S)
+        K = self.P @ H.T @ np.linalg.pinv(S)  # Fabian's edit, more stable
 
         x_new = x + K @ y
-        P_new = (np.eye(len(x)) - K @ H) @ self.P
+        I = np.eye(len(x))
+        P_new = (I - K @ H) @ self.P @ (I - K @ H).T + K @ R @ K.T
 
         # Update the state and covariance
         self.set_state_vector(x_new)
@@ -151,14 +153,14 @@ class EKF:
         return F
     
     def predict_covariance(self, raw_drive_meas):
-            n = self.number_landmarks()*2 + 3
-            Q = np.zeros((n,n))
+        n = self.number_landmarks()*2 + 3
+        Q = np.zeros((n,n))
 
-            Q_temp = self.robot.covariance_drive(raw_drive_meas)
-            S = np.diag([self.q_scale_lin, self.q_scale_lin, self.q_scale_ang])
-            Q[0:3,0:3] = S @ Q_temp @ S.T +  0.001*np.eye(3)
-            
-            return Q
+        Q_temp = self.robot.covariance_drive(raw_drive_meas)
+        S = np.diag([self.q_scale_lin, self.q_scale_lin, self.q_scale_ang])
+        Q[0:3,0:3] = S @ Q_temp @ S.T +  0.001*np.eye(3)
+        
+        return Q
 
     def add_landmarks(self, measurements):
         if not measurements:

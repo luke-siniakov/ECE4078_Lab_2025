@@ -28,15 +28,15 @@ image_points = np.array(pts, dtype=np.float32)
 # We assume the rig is set up in default configuration as shown in README
 cm = 0.01
 object_points = np.array([
-        [ 0,  -12.3, 12.4],
-        [ 0,   -6.2, 12.4],
-        [ 0,  -12.4,  6.5],
-        [ 0,   -6.1,  6.3],
-        [ 6.3,  0,   12.4],
-        [12.3,  0,   12.4],
-        [ 6.2,  0,    6.3],
-        [12.4,  0,    6.3]
-    ]).T * cm # calibration rig specs, dtype=np.float32) * cm
+        [ 0,  -12.2, 12.2],
+        [ 0,   -6.2, 12.2],
+        [ 0,  -12.2,  6.2],
+        [ 0,   -6.2,  6.2],
+        [ 6.2,  0,   12.2],
+        [12.2,  0,   12.2],
+        [ 6.2,  0,    6.2],
+        [12.2,  0,    6.2]
+    ], dtype=np.float32) * cm
 
 obj_pts_list = [object_points]
 img_pts_list = [image_points]
