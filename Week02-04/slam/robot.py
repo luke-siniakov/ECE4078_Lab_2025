@@ -1,7 +1,7 @@
 import numpy as np
 
 class Robot:
-    EPS = 1*np.exp(-6)
+    EPS = 1e-6
     def __init__(self, wheels_width, wheels_scale, camera_matrix, camera_dist):
 
         self.cam_offset = np.zeros((2,1))  #EDIT MADE
