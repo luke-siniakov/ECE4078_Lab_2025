@@ -19,16 +19,9 @@ class EKF:
         self.markers = np.zeros((2,0))
         self.taglist = []
 
-        #Covariance update
-        self.q_scale_lin = 0.8 # < 1 = trust model more for x,y ; > 1 = trust less
-        self.q_scale_ang  = 0.6 
-        self.q_landmark   = 0.0
-
-        self.r_scale      = 0.5   # < 1 = trust camera more; > 1 = trust it less (global)
-
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 0.2
+        self.init_lm_cov = 1e3
         self.robot_init_state = None
         self.lm_pics = []
         for i in range(1, 11):
@@ -44,7 +37,7 @@ class EKF:
         self.taglist = []
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 0.2
+        self.init_lm_cov = 1e3
         self.robot_init_state = None
 
     def number_landmarks(self):
@@ -73,14 +66,7 @@ class EKF:
             tag = []
             for lm in measurements:
                 if lm.tag in self.taglist:
-                    #lm_new = np.concatenate((lm_new, lm.position), axis=1) #EDIT MADE (replaced under)
-                    ########################### EDIT MADE #########################
-                    R_bc = np.array([[np.cos(self.robot.cam_yaw), -np.sin(self.robot.cam_yaw)],
-                    [np.sin(self.robot.cam_yaw),  np.cos(self.robot.cam_yaw)]])
-                    t_bc = self.robot.cam_offset.reshape(2,1)
-                    lm_b = R_bc @ lm.position + t_bc
-                    lm_new = np.concatenate((lm_new, lm_b), axis=1)
-                    ############################# EDIT MADE #########################
+                    lm_new = np.concatenate((lm_new, lm.position), axis=1)
                     tag.append(int(lm.tag))
                     lm_idx = self.taglist.index(lm.tag)
                     lm_prev = np.concatenate((lm_prev,self.markers[:,lm_idx].reshape(2, 1)), axis=1)
@@ -102,12 +88,10 @@ class EKF:
     def predict(self, raw_drive_meas):
 
         F = self.state_transition(raw_drive_meas)
-        # edits below:
-        self.robot.drive(raw_drive_meas)
 
-        Q = self.predict_covariance(raw_drive_meas)
-
-        self.P = F @ self.P @ F.T + Q
+        self.robot.drive(raw_drive_meas) # Updates robot's position based on driving data
+        # TODO: add your codes here to complete the prediction step
+        self.P = (F @ self.P @ F.T) + self.predict_covariance(raw_drive_meas)
 
     # the update step of EKF
     def update(self, measurements):
@@ -122,7 +106,7 @@ class EKF:
         z = np.concatenate([lm.position.reshape(-1,1) for lm in measurements], axis=0)
         R = np.zeros((2*len(measurements),2*len(measurements)))
         for i in range(len(measurements)):
-            R[2*i:2*i+2,2*i:2*i+2] = measurements[i].covariance*self.r_scale
+            R[2*i:2*i+2,2*i:2*i+2] = measurements[i].covariance
 
         # Compute own measurements
         z_hat = self.robot.measure(self.markers, idx_list)
@@ -130,22 +114,18 @@ class EKF:
         H = self.robot.derivative_measure(self.markers, idx_list)
 
         x = self.get_state_vector()
+
+        # TODO: add your codes here to compute the updated x
+        Y = z - z_hat
+        S = np.linalg.inv((H @ self.P @ H.T) + R)
+        K = self.P @ H.T @ S
+        x_new = x + np.matmul(K, Y)
+
+        # ENDTODO
+        self.set_state_vector(x_new) # Updates marker and robot poses based on the values in the state vector 'x'
+        #size = np.shape(K)[0]
+        #self.P = np.matmul((np.eye(size) - np.matmul(K, H)), self.P)
         
-        # EKF update equations
-        y = z - z_hat
-        S = H @ self.P @ H.T + R
-        #K = self.P @ H.T @ np.linalg.inv(S)
-        K = self.P @ H.T @ np.linalg.pinv(S)  # Fabian's edit, more stable
-
-        x_new = x + K @ y
-        I = np.eye(len(x))
-        P_new = (I - K @ H) @ self.P @ (I - K @ H).T + K @ R @ K.T
-
-        # Update the state and covariance
-        self.set_state_vector(x_new)
-        self.P = P_new
-
-
     def state_transition(self, raw_drive_meas):
         n = self.number_landmarks()*2 + 3
         F = np.eye(n)
@@ -156,10 +136,23 @@ class EKF:
         n = self.number_landmarks()*2 + 3
         Q = np.zeros((n,n))
 
-        Q_temp = self.robot.covariance_drive(raw_drive_meas)
-        S = np.diag([self.q_scale_lin, self.q_scale_lin, self.q_scale_ang])
-        Q[0:3,0:3] = S @ Q_temp @ S.T +  0.001*np.eye(3)
-        
+        lin_vel, ang_vel = self.robot.convert_wheel_speeds(raw_drive_meas.left_speed, raw_drive_meas.right_speed)
+        dt = raw_drive_meas.dt
+        state = self.get_state_vector()
+        heading = state[2]
+        direction_vector = np.array([np.cos(heading), np.sin(heading)])
+        if lin_vel == 0 and ang_vel == 0:
+            Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas)
+        elif lin_vel != 0:
+            addition = np.eye(3)
+            addition_xy = direction_vector @ direction_vector.T * abs(lin_vel) * dt
+            addition[0:2, 0:2] = addition_xy
+            addition[2][2] = 0.01 #theta is only slightly affected by linear motion
+            Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas) + addition * 0.02 #2% of distance x time is uncertainty
+        elif ang_vel != 0:
+            addition = np.zeros((3,3))
+            addition[2][2] = abs(ang_vel) * dt
+            Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas)+ addition * 0.02
         return Q
 
     def add_landmarks(self, measurements):
@@ -176,19 +169,8 @@ class EKF:
                 # ignore known tags
                 continue
             
-            #lm_bff = lm.position #EDIT MADE (replaced under)
-            #lm_inertial = robot_xy + R_theta @ lm_bff
-
-            ######################### EDIT MADE #########################
-            R_bc = np.array([[np.cos(self.robot.cam_yaw), -np.sin(self.robot.cam_yaw)],
-                 [np.sin(self.robot.cam_yaw),  np.cos(self.robot.cam_yaw)]])
-            t_bc = self.robot.cam_offset.reshape(2,1)
-
-            lm_c = lm.position                  # camera frame
-            lm_b = R_bc @ lm_c + t_bc           # base frame
-            lm_inertial = robot_xy + R_theta @ lm_b
-            ######################### EDIT MADE ^ #########################
-
+            lm_bff = lm.position
+            lm_inertial = robot_xy + R_theta @ lm_bff
 
             self.taglist.append(int(lm.tag))
             self.markers = np.concatenate((self.markers, lm_inertial), axis=1)
@@ -269,7 +251,7 @@ class EKF:
         canvas = cv2.ellipse(canvas, start_point_uv, 
                     (int(axes_len[0]*m2pixel), int(axes_len[1]*m2pixel)),
                     angle, 0, 360, (0, 30, 56), 1)
-        # draw landmarks
+        # draw landmards
         if self.number_landmarks() > 0:
             for i in range(len(self.markers[0,:])):
                 xy = (lms_xy[0, i], lms_xy[1, i])
