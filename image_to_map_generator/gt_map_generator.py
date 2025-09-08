@@ -463,7 +463,7 @@ class MainView(QMainWindow):
 
         self._params = Parameters(
             DesiredGroundTruth=cwd + '/reference_maps/' + params['reference_map'],
-            InputImage=cwd + '/input_images/' + params['input_image'],
+            InputImage=cwd + '/input_images/' + 'George_image.jpg',
             SaveImageName=cwd + '/generated_ground_truth_maps/' + params['output_map_name'],
             ArenaSize=arena_size,
             ImageDisplayResolution=image_display_resolution,

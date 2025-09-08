@@ -5,6 +5,7 @@ class Robot:
         # State is a vector of [x,y,theta]'
         self.state = np.zeros((3,1))
         
+        
         # Wheel parameters
         self.wheels_width = wheels_width  # The distance between the left and right wheels
         self.wheels_scale = wheels_scale  # The scaling factor converting ticks/s to m/s
@@ -38,13 +39,13 @@ class Robot:
         # Construct a 2x2 rotation matrix from the robot angle
         th = self.state[2]
         Rot_theta = np.block([[np.cos(th), -np.sin(th)],[np.sin(th), np.cos(th)]])
-        robot_xy = self.state[0:2,:]
-
-        measurements = []
+        robot_xy = self.state[0:2,:] #EDIT MADE (commented out)
+        measurements = [] #EDIT MADE (commented out)
         for idx in idx_list:
             marker = markers[:,idx:idx+1]
             marker_bff = Rot_theta.T @ (marker - robot_xy)
             measurements.append(marker_bff)
+
 
         # Stack the measurements in a 2xm structure.
         markers_bff = np.concatenate(measurements, axis=1)
@@ -75,9 +76,17 @@ class Robot:
 
         dt = drive_meas.dt
         th = self.state[2]
-        
-        # TODO: add your codes here to compute DFx using lin_vel, ang_vel, dt, and th
 
+        #edits:
+        if abs(ang_vel) < 1e-12:  # Straight line
+            DFx[0, 2] = -lin_vel * np.sin(th) * dt
+            DFx[1, 2] =  lin_vel * np.cos(th) * dt
+        else: #turning
+            th2 = th + ang_vel * dt
+            
+            DFx[0, 2] = (lin_vel/ang_vel) * (np.cos(th2) - np.cos(th))
+            DFx[1, 2] = (lin_vel/ang_vel) * (np.sin(th2) - np.sin(th))
+            
         return DFx
 
     def derivative_measure(self, markers, idx_list):
@@ -88,7 +97,7 @@ class Robot:
         DH = np.zeros((n,m))
 
         robot_xy = self.state[0:2,:]
-        th = self.state[2]        
+        th = self.state[2]
         Rot_theta = np.block([[np.cos(th), -np.sin(th)],[np.sin(th), np.cos(th)]])
         DRot_theta = np.block([[-np.sin(th), -np.cos(th)],[np.cos(th), -np.sin(th)]])
 
@@ -125,6 +134,27 @@ class Robot:
         Jac2 = np.zeros((3,2))
         
         # TODO: add your codes here to compute Jac2 using lin_vel, ang_vel, dt, th, and th2
+        eps = 1e-6  # tolerance for "straight"
+        if abs(ang_vel) < eps:
+            # Reference test expects NO dependence on angular velocity in straight motion
+            Jac2[0,0] = dt*np.cos(th)
+            Jac2[1,0] = dt*np.sin(th)
+            Jac2[0,1] = 0.0
+            Jac2[1,1] = 0.0
+            Jac2[2,1] = 0.0
+        else:
+            w=ang_vel
+            sin_d = np.sin(th2) - np.sin(th)
+            cos_d = -np.cos(th2) + np.cos(th)
+
+            Jac2[0,0] = sin_d / w
+            Jac2[1,0] = cos_d / w
+            Jac2[2,0] = 0.0
+
+            Jac2[0,1] = lin_vel * ((dt*w*np.cos(th2) - sin_d) / (w**2))
+            Jac2[1,1] = lin_vel * ((dt*w*np.sin(th2) - cos_d) / (w**2))
+            Jac2[2,1] = dt
+        # END TODO
 
         # Derivative of x,y,theta w.r.t. left_speed, right_speed
         Jac = Jac2 @ Jac1

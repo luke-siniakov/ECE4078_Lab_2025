@@ -5,6 +5,7 @@ class Robot:
         # State is a vector of [x,y,theta]'
         self.state = np.zeros((3,1))
         
+        
         # Wheel parameters
         self.wheels_width = wheels_width  # The distance between the left and right wheels
         self.wheels_scale = wheels_scale  # The scaling factor converting ticks/s to m/s
@@ -38,13 +39,13 @@ class Robot:
         # Construct a 2x2 rotation matrix from the robot angle
         th = self.state[2]
         Rot_theta = np.block([[np.cos(th), -np.sin(th)],[np.sin(th), np.cos(th)]])
-        robot_xy = self.state[0:2,:]
-
-        measurements = []
+        robot_xy = self.state[0:2,:] #EDIT MADE (commented out)
+        measurements = [] #EDIT MADE (commented out)
         for idx in idx_list:
             marker = markers[:,idx:idx+1]
             marker_bff = Rot_theta.T @ (marker - robot_xy)
             measurements.append(marker_bff)
+
 
         # Stack the measurements in a 2xm structure.
         markers_bff = np.concatenate(measurements, axis=1)
@@ -75,26 +76,17 @@ class Robot:
 
         dt = drive_meas.dt
         th = self.state[2]
-        
-        # TODO: add your codes here to compute DFx using lin_vel, ang_vel, dt, and th
-        if np.abs(ang_vel) < 1e-12:
-            # Straight motion: x += v cosθ dt, y += v sinθ dt
-            # ∂x_next/∂θ = -v sinθ dt ; ∂y_next/∂θ = v cosθ dt
+
+        #edits:
+        if abs(ang_vel) < 1e-12:  # Straight line
             DFx[0, 2] = -lin_vel * np.sin(th) * dt
             DFx[1, 2] =  lin_vel * np.cos(th) * dt
-        else:
-            # Arc motion :
-            # x += (v/ω)[sin(θ+ωdt) - sinθ]
-            # y += (v/ω)[cosθ - cos(θ+ωdt)]
-            # Differentiate w.r.t θ:
-            # ∂x_next/∂θ = (v/ω)[cos(θ+ωdt) - cosθ]
-            # ∂y_next/∂θ = (v/ω)[-sinθ + sin(θ+ωdt)]
-            theta_next = th + ang_vel * dt
-            ratio = lin_vel / ang_vel
-            DFx[0, 2] = ratio * (np.cos(theta_next) - np.cos(th))
-            DFx[1, 2] = ratio * (-np.sin(th) + np.sin(theta_next))
-        # ENDTODO
-
+        else: #turning
+            th2 = th + ang_vel * dt
+            
+            DFx[0, 2] = (lin_vel/ang_vel) * (np.cos(th2) - np.cos(th))
+            DFx[1, 2] = (lin_vel/ang_vel) * (np.sin(th2) - np.sin(th))
+            
         return DFx
 
     def derivative_measure(self, markers, idx_list):
@@ -105,7 +97,7 @@ class Robot:
         DH = np.zeros((n,m))
 
         robot_xy = self.state[0:2,:]
-        th = self.state[2]        
+        th = self.state[2]
         Rot_theta = np.block([[np.cos(th), -np.sin(th)],[np.sin(th), np.cos(th)]])
         DRot_theta = np.block([[-np.sin(th), -np.cos(th)],[np.cos(th), -np.sin(th)]])
 
@@ -142,39 +134,27 @@ class Robot:
         Jac2 = np.zeros((3,2))
         
         # TODO: add your codes here to compute Jac2 using lin_vel, ang_vel, dt, th, and th2
-        # Jac2 = ∂[x', y', θ'] / ∂[v, ω]
-        if np.abs(ang_vel) < 1e-12:
-            # Straight model used in drive():
-            # x' = x + v cosθ dt,  y' = y + v sinθ dt,  θ' = θ
-            Jac2[0, 0] = np.cos(th) * dt          # ∂x'/∂v
-            Jac2[1, 0] = np.sin(th) * dt          # ∂y'/∂v
-            Jac2[2, 0] = 0.0                      # ∂θ'/∂v
-            Jac2[0, 1] = 0.0                      # ∂x'/∂ω   (θ not updated in straight branch)
-            Jac2[1, 1] = 0.0                      # ∂y'/∂ω
-            Jac2[2, 1] = 0.0                      # ∂θ'/∂ω
+        eps = 1e-6  # tolerance for "straight"
+        if abs(ang_vel) < eps:
+            # Reference test expects NO dependence on angular velocity in straight motion
+            Jac2[0,0] = dt*np.cos(th)
+            Jac2[1,0] = dt*np.sin(th)
+            Jac2[0,1] = 0.0
+            Jac2[1,1] = 0.0
+            Jac2[2,1] = 0.0
         else:
-            # Arc model used in drive():
-            # x' = x + (v/ω)[sin(θ+ωdt) - sinθ]
-            # y' = y + (v/ω)[cosθ - cos(θ+ωdt)]
-            # θ' = θ + ωdt
-            ratio = lin_vel / ang_vel             # v/ω
-            dsin  = np.sin(th2) - np.sin(th)
-            dcos  = np.cos(th) - np.cos(th2)
+            w=ang_vel
+            sin_d = np.sin(th2) - np.sin(th)
+            cos_d = -np.cos(th2) + np.cos(th)
 
-            # ∂x'/∂v = (1/ω)[sin(θ+ωdt) - sinθ]
-            Jac2[0, 0] = dsin / ang_vel
-            # ∂y'/∂v = (1/ω)[cosθ - cos(θ+ωdt)]
-            Jac2[1, 0] = dcos / ang_vel
-            Jac2[2, 0] = 0.0
+            Jac2[0,0] = sin_d / w
+            Jac2[1,0] = cos_d / w
+            Jac2[2,0] = 0.0
 
-            # ∂x'/∂ω = v * [ (dt cos(θ+ωdt))/ω  - (sin(θ+ωdt)-sinθ)/ω^2 ]
-            Jac2[0, 1] = lin_vel * ( (dt * np.cos(th2)) / ang_vel - dsin / (ang_vel**2) )
-            # ∂y'/∂ω = v * [ (dt sin(θ+ωdt))/ω  - (cosθ - cos(θ+ωdt))/ω^2 ]
-            Jac2[1, 1] = lin_vel * ( (dt * np.sin(th2)) / ang_vel - dcos / (ang_vel**2) )
-            # ∂θ'/∂ω = dt
-            Jac2[2, 1] = dt
-        # ENDTODO
-
+            Jac2[0,1] = lin_vel * ((dt*w*np.cos(th2) - sin_d) / (w**2))
+            Jac2[1,1] = lin_vel * ((dt*w*np.sin(th2) - cos_d) / (w**2))
+            Jac2[2,1] = dt
+        # END TODO
 
         # Derivative of x,y,theta w.r.t. left_speed, right_speed
         Jac = Jac2 @ Jac1

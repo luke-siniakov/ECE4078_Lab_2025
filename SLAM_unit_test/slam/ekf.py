@@ -21,7 +21,7 @@ class EKF:
 
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 1e3
+        self.init_lm_cov = 0.6
         self.robot_init_state = None
         self.lm_pics = []
         for i in range(1, 11):
@@ -37,7 +37,7 @@ class EKF:
         self.taglist = []
         # Covariance matrix
         self.P = np.zeros((3,3))
-        self.init_lm_cov = 1e3
+        self.init_lm_cov = 0.6
         self.robot_init_state = None
 
     def number_landmarks(self):
@@ -88,11 +88,11 @@ class EKF:
     def predict(self, raw_drive_meas):
 
         F = self.state_transition(raw_drive_meas)
-        x = self.get_state_vector()
-
+        Q = self.predict_covariance(raw_drive_meas)
+        self.robot.drive(raw_drive_meas) # Updates robot's position based on driving data
         # TODO: add your codes here to complete the prediction step
-
-    # the update step of EKF
+        self.P = (F @ self.P @ F.T) + Q
+        
     def update(self, measurements):
         if not measurements:
             return
@@ -103,20 +103,32 @@ class EKF:
 
         # Stack measurements and set covariance
         z = np.concatenate([lm.position.reshape(-1,1) for lm in measurements], axis=0)
-        R = np.zeros((2*len(measurements),2*len(measurements)))
-        for i in range(len(measurements)):
-            R[2*i:2*i+2,2*i:2*i+2] = measurements[i].covariance
+        R = np.zeros((2*len(measurements), 2*len(measurements)))
+        for i, lm in enumerate(measurements):
+            R[2*i:2*i+2, 2*i:2*i+2] = lm.covariance
 
-        # Compute own measurements
+        # Compute predicted measurements
         z_hat = self.robot.measure(self.markers, idx_list)
-        z_hat = z_hat.reshape((-1,1),order="F")
+        z_hat = z_hat.reshape((-1,1), order='F')
+
+        # Compute measurement Jacobian
         H = self.robot.derivative_measure(self.markers, idx_list)
 
+        # EKF gain
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+
+        # Update state
         x = self.get_state_vector()
+        x = x + K @ (z - z_hat)
 
-        # TODO: add your codes here to compute the updated x
+        # Update covariance
+        I = np.eye(self.P.shape[0])
+        self.P = (I - K @ H) @ self.P
 
-
+        # Write back to robot and landmarks
+        self.set_state_vector(x)
+        
     def state_transition(self, raw_drive_meas):
         n = self.number_landmarks()*2 + 3
         F = np.eye(n)
@@ -126,7 +138,7 @@ class EKF:
     def predict_covariance(self, raw_drive_meas):
         n = self.number_landmarks()*2 + 3
         Q = np.zeros((n,n))
-        Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas)+ 0.01*np.eye(3)
+        Q[0:3,0:3] = self.robot.covariance_drive(raw_drive_meas)
         return Q
 
     def add_landmarks(self, measurements):
@@ -211,7 +223,7 @@ class EKF:
         else:
             bg_rgb = np.array([120, 120, 120]).reshape(1, 1, 3)
         canvas = np.ones((res[1], res[0], 3))*bg_rgb.astype(np.uint8)
-        # in meters, 
+        # in meters,
         lms_xy = self.markers[:2, :]
         robot_xy = self.robot.state[:2, 0].reshape((2, 1))
         lms_xy = lms_xy - robot_xy
@@ -222,7 +234,7 @@ class EKF:
         
         p_robot = self.P[0:2,0:2]
         axes_len,angle = self.make_ellipse(p_robot)
-        canvas = cv2.ellipse(canvas, start_point_uv, 
+        canvas = cv2.ellipse(canvas, start_point_uv,
                     (int(axes_len[0]*m2pixel), int(axes_len[1]*m2pixel)),
                     angle, 0, 360, (0, 30, 56), 1)
         # draw landmards
@@ -233,7 +245,7 @@ class EKF:
                 # plot covariance
                 Plmi = self.P[3+2*i:3+2*(i+1),3+2*i:3+2*(i+1)]
                 axes_len, angle = self.make_ellipse(Plmi)
-                canvas = cv2.ellipse(canvas, coor_, 
+                canvas = cv2.ellipse(canvas, coor_,
                     (int(axes_len[0]*m2pixel), int(axes_len[1]*m2pixel)),
                     angle, 0, 360, (244, 69, 96), 1)
 
@@ -261,12 +273,12 @@ class EKF:
         rot_rect = orig_rect.copy()
         rot_rect.center = rot_image.get_rect().center
         rot_image = rot_image.subsurface(rot_rect).copy()
-        return rot_image       
+        return rot_image
 
     @staticmethod
     def make_ellipse(P):
         e_vals, e_vecs = np.linalg.eig(P)
-        idx = e_vals.argsort()[::-1]   
+        idx = e_vals.argsort()[::-1]
         e_vals = e_vals[idx]
         e_vecs = e_vecs[:, idx]
         alpha = np.sqrt(4.605)
@@ -276,5 +288,3 @@ class EKF:
         else:
             angle = 0
         return (axes_len[0], axes_len[1]), angle
-
- 

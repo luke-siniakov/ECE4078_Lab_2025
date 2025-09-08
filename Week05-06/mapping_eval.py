@@ -1,6 +1,8 @@
 import json
 import numpy as np
 from copy import deepcopy
+import matplotlib.pyplot as plt
+
 
 # list of target fruit and veg types
 TARGET_TYPES = ['pear', 'lemon', 'orange', 'tomato', 'capsicum', 'potato', 'pumpkin', 'garlic']
@@ -195,6 +197,70 @@ def compute_object_est_error(gt_list, est_list):
 
     return object_errors
 
+def plot_maps(gt_markers, est_markers, gt_objects, est_objects, taglist):
+    """
+    Plot ground truth vs estimated map (markers + objects) with connecting lines.
+    
+    Args:
+        gt_markers (np.ndarray): 2xN ground truth marker positions.
+        est_markers (np.ndarray): 2xN estimated marker positions (aligned).
+        gt_objects (dict): Ground truth objects {type: [[x,y], ...]}.
+        est_objects (dict): Estimated objects {type: [[x,y], ...]} (aligned).
+        taglist (list): List of marker IDs corresponding to marker positions.
+    """
+    plt.figure(figsize=(12, 12))
+    
+    # === Plot ArUco markers ===
+    if gt_markers.shape[1] > 0:
+        plt.scatter(gt_markers[0, :], gt_markers[1, :],
+                    c='blue', marker='o', s=120, label="GT Markers")
+    if est_markers.shape[1] > 0:
+        plt.scatter(est_markers[0, :], est_markers[1, :],
+                    c='red', marker='^', s=120, label="Estimated Markers")
+
+    # Draw lines between GT ↔ Estimated markers
+    for i, tag in enumerate(taglist):
+        plt.plot([gt_markers[0, i], est_markers[0, i]],
+                 [gt_markers[1, i], est_markers[1, i]],
+                 'k--', alpha=0.6)
+        plt.text(gt_markers[0, i] + 0.02, gt_markers[1, i] + 0.02,
+                 f"GT {tag}", color='blue')
+        plt.text(est_markers[0, i] + 0.02, est_markers[1, i] - 0.04,
+                 f"EST {tag}", color='red')
+    
+    # === Plot objects ===
+    for obj_type in gt_objects:
+        for (x, y) in gt_objects[obj_type]:
+            plt.scatter(x, y, c='green', marker='o', s=100)
+            plt.text(x + 0.02, y + 0.02, f"GT {obj_type}", color='green')
+    
+    for obj_type in est_objects:
+        for (x, y) in est_objects[obj_type]:
+            plt.scatter(x, y, c='orange', marker='s', s=100)
+            plt.text(x + 0.02, y - 0.04, f"EST {obj_type}", color='orange')
+    
+    # === Connect GT ↔ EST objects ===
+    for obj_type in gt_objects:
+        if obj_type in est_objects:
+            for gt_pos in gt_objects[obj_type]:
+                gt_pos = np.array(gt_pos)
+                # find closest est for visualization
+                dists = [np.linalg.norm(gt_pos - np.array(est)) for est in est_objects[obj_type]]
+                if len(dists) > 0:
+                    est_pos = est_objects[obj_type][np.argmin(dists)]
+                    plt.plot([gt_pos[0], est_pos[0]],
+                             [gt_pos[1], est_pos[1]],
+                             'k--', alpha=0.5)
+
+    # Formatting
+    plt.title("Ground Truth vs Estimated Map", fontsize=16)
+    plt.xlabel("X position", fontsize=14)
+    plt.ylabel("Y position", fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.axis("equal")
+    plt.show()
+
 def align_object_poses(theta, x, objects_est):
     objects = deepcopy(objects_est)
 
@@ -306,6 +372,7 @@ if __name__ == '__main__':
         print(f'Level 1 Target Estimation Error Score (0 to 70): = {target_pose_estimation_mark * 40}')
         print(f'Level 2 Target Estimation Error Score (0 to 70): = {target_pose_estimation_mark * 50}')
         print(f'Level 3 Target Estimation Error Score (0 to 70): = {target_pose_estimation_mark * 70}')
+        plot_maps(slam_gt_vec, slam_est_vec_aligned, objects_gt, objects_est_aligned, taglist)
 
 
 

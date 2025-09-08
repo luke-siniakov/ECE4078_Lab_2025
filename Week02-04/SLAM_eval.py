@@ -2,6 +2,8 @@
 import ast
 import numpy as np
 import json
+import matplotlib.pyplot as plt
+
 
 def parse_groundtruth(fname : str) -> dict:
     with open(fname,'r') as f:
@@ -101,6 +103,47 @@ def compute_rmse(points1, points2):
     
     return np.sqrt(MSE), unraveled_residual
 
+import matplotlib.pyplot as plt
+
+def plot_maps(gt_vec, est_vec, taglist):
+    """
+    Plot ground truth vs estimated marker positions with connecting lines.
+    
+    Args:
+        gt_vec (np.ndarray): 2xN array of ground truth marker positions.
+        est_vec (np.ndarray): 2xN array of estimated marker positions (aligned).
+        taglist (list): List of marker IDs corresponding to columns in gt_vec/est_vec.
+    """
+    plt.figure(figsize=(12, 12))  # large figure for clarity
+    
+    # Plot ground truth positions
+    plt.scatter(gt_vec[0, :], gt_vec[1, :], 
+                c='blue', marker='o', s=120, label="Ground Truth")
+    
+    # Plot estimated positions
+    plt.scatter(est_vec[0, :], est_vec[1, :], 
+                c='red', marker='^', s=120, label="Estimated (Aligned)")
+    
+    # Draw lines and label markers
+    for i, tag in enumerate(taglist):
+        # Connect GT and EST with a dashed line
+        plt.plot([gt_vec[0, i], est_vec[0, i]],
+                 [gt_vec[1, i], est_vec[1, i]],
+                 'k--', alpha=0.6)
+        
+        # Label each marker
+        plt.text(gt_vec[0, i] + 0.02, gt_vec[1, i] + 0.02, f"GT {tag}", color='blue')
+        plt.text(est_vec[0, i] + 0.02, est_vec[1, i] - 0.04, f"EST {tag}", color='red')
+    
+    # Formatting
+    plt.title("SLAM Map vs Ground Truth", fontsize=16)
+    plt.xlabel("X position", fontsize=14)
+    plt.ylabel("Y position", fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(True, linestyle="--", alpha=0.6)
+    plt.axis("equal")  # keep aspect ratio consistent
+    plt.show()
+
 
 if __name__ == '__main__':
     import argparse
@@ -159,5 +202,7 @@ if __name__ == '__main__':
     print("np.array("+np.array2string(us_vec_aligned, precision=4, separator=',')+')')
     print("Marker errors (Highest error assumed for unseen markers)")
     print("np.array("+np.array2string(residuals, precision=4, separator=',')+')')
+    plot_maps(gt_vec, us_vec_aligned, taglist)
+
 
 
