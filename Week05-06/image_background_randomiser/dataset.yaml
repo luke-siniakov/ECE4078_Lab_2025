@@ -1,0 +1,7 @@
+path: .
+train: generated/images
+val: generated/images
+names:
+  0: orange
+  1: potato
+  2: pumpkin

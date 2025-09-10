@@ -132,6 +132,10 @@ class Operate:
 
             # covert the colour back for display purpose
             self.yolo_vis = cv2.cvtColor(self.yolo_vis, cv2.COLOR_RGB2BGR)
+            
+            # Copy ARUCO markers onto YOLO visualization
+            aruco_mask = np.any(self.aruco_img != self.img, axis=2)
+            self.yolo_vis[aruco_mask] = self.aruco_img[aruco_mask]
 
             # self.command['inference'] = False     # uncomment this if you do not want to continuously predict
             self.file_output = (yolo_input_img, self.ekf)
@@ -192,25 +196,20 @@ class Operate:
         ekf_view = self.ekf.draw_slam_state(res=(320, 480 + v_pad),
                                             not_pause=self.ekf_on)
         canvas.blit(ekf_view, (2 * h_pad + 320, v_pad))
-        robot_view = cv2.resize(self.aruco_img, (320, 240))
-        self.draw_pygame_window(canvas, robot_view,
-                                position=(h_pad, v_pad)
-                                )
-
-        # for target detector (M3)
-        detector_view = cv2.resize(self.yolo_vis, (320, 240), cv2.INTER_NEAREST)
-        self.draw_pygame_window(canvas, detector_view,
-                                position=(h_pad, 240 + 2 * v_pad)
-                                )
+        
+        # Combined ARUCO + YOLO view (or just ARUCO if no YOLO inference)
+        if self.command['inference'] and self.detector is not None:
+            combined_view = cv2.resize(self.yolo_vis, (320, 240), cv2.INTER_NEAREST)
+        else:
+            combined_view = cv2.resize(self.aruco_img, (320, 240))
+        self.draw_pygame_window(canvas, combined_view, position=(h_pad, v_pad))
 
         # canvas.blit(self.gui_mask, (0, 0))
         self.put_caption(canvas, caption='SLAM', position=(2 * h_pad + 320, v_pad))
-        self.put_caption(canvas, caption='Detector',
-                         position=(h_pad, 240 + 2 * v_pad))
-        self.put_caption(canvas, caption='PiBot Cam', position=(h_pad, v_pad))
+        self.put_caption(canvas, caption='ARUCO + Detector', position=(h_pad, v_pad))
 
         notifiation = TEXT_FONT.render(self.notification,
-                                       False, text_colour)
+                                    False, text_colour)
         canvas.blit(notifiation, (h_pad + 10, 596))
 
         time_remain = self.count_down - time.time() + self.start_time
@@ -223,7 +222,6 @@ class Operate:
         count_down_surface = TEXT_FONT.render(time_remain, False, (50, 50, 50))
         canvas.blit(count_down_surface, (2 * h_pad + 320 + 5, 530))
         return canvas
-
     @staticmethod
     def draw_pygame_window(canvas, cv2_img, position):
         cv2_img = np.rot90(cv2_img)
@@ -242,16 +240,16 @@ class Operate:
         for event in pygame.event.get():
             # drive forward
             if event.type == pygame.KEYDOWN and event.key == pygame.K_UP:
-                self.command['motion'][0] = min(self.command['motion'][0] + 1, 1)
+                self.command['motion']=[1,0]
             # drive backward
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_DOWN:
-                self.command['motion'][0] = max(self.command['motion'][0] - 1, -1)
+                self.command['motion']=[-1,0]
             # turn left
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_LEFT:
-                self.command['motion'][1] = min(self.command['motion'][1] + 1, 1)
+                self.command['motion']=[0,1]
             # drive right
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_RIGHT:
-                self.command['motion'][1] = max(self.command['motion'][1] - 1, -1)
+                self.command['motion']=[0,-1]
             # stop
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 self.command['motion'] = [0, 0]

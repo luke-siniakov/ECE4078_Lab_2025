@@ -88,9 +88,9 @@ if __name__ == '__main__':
     # get current script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    yolo = Detector(f'{script_dir}/model/yolov8_model.pt')
+    yolo = Detector(f'{script_dir}/model/best (1).pt')
 
-    img = cv2.imread(f'{script_dir}/test/test_image_1.png')
+    img = cv2.imread(f'{script_dir}/test/test_image_2.png')
 
     bboxes, img_out = yolo.detect_single_image(img)
 
