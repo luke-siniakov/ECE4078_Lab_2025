@@ -78,29 +78,40 @@ def estimate_pose(camera_matrix, obj_info, robot_pose):
     return target_pose
 
 
-def merge_estimations(target_pose_dict):
-    target_est = {}
-    parsed_poses = []
+def merge_estimations(target_pose_dict, dist_thresh=0.5, max_per_type=3):
+    """
+    Merge multiple occurrences of the same class by clustering nearby detections.
+    Keeps up to max_per_type clusters per class, averaging points within dist_thresh meters.
+    """
+    # Group detections by class name (everything before the last '_' index suffix)
+    by_class = {}
+    for key, pose in target_pose_dict.items():
+        cls = key.split('_')[0]
+        by_class.setdefault(cls, []).append(np.array([pose['x'], pose['y']], dtype=float))
 
-    for val in target_pose_dict.values():
-        parsed_poses.append([val["x"], val["y"]])
+    merged = {}
+    for cls, pts in by_class.items():
+        clusters = []  # each: {'pts': [np.array([x,y])...], 'mean': np.array([x,y])}
 
-    parsed_poses = np.array(parsed_poses)
+        for p in pts:
+            assigned = False
+            for c in clusters:
+                if np.linalg.norm(p - c['mean']) <= dist_thresh:
+                    c['pts'].append(p)
+                    c['mean'] = np.mean(c['pts'], axis=0)
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append({'pts': [p], 'mean': p})
 
-    # Run KMeans clustering with 10 clusters
-    kmeans = k_means(n_clusters=10, random_state=42)
-    kmeans.fit(parsed_poses)
-    merged_poses = kmeans.cluster_centers_
+        # Prefer clusters with more supporting detections
+        clusters.sort(key=lambda c: len(c['pts']), reverse=True)
 
-    for centroid in merged_poses:
-        centroid = np.tile(centroid, (len(parsed_poses), 1))
-        distances = np.sqrt(((parsed_poses - centroid) ** 2).sum(axis=1))
-        closest = parsed_poses[np.argmin(distances)]
+        # Keep up to max_per_type clusters and name them deterministically
+        for i, c in enumerate(clusters[:max_per_type]):
+            merged[f'{cls}_{i}'] = {'x': float(c['mean'][0]), 'y': float(c['mean'][1])}
 
-        for k, v in target_pose_dict.items():
-            if v["x"] == closest[0] and v["y"] == closest[1]:
-                target_est[k] = v
-    return target_est
+    return merged
 
 
 # main loop

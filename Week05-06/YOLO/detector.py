@@ -24,14 +24,14 @@ class Detector:
         # Define confidence thresholds for each class
         # Adjusted based on common detection issues:
         self.class_confidence_thresholds = {
-            'orange': 0.5,
+            'orange': 0.4,
             'lemon': 0.75,      # Higher threshold - reduces false positives on random objects
-            'pear': 0.4,
-            'tomato': 0.65,     # Higher threshold - reduces confusion with capsicum
-            'capsicum': 0.65,   # Higher threshold - reduces confusion with tomato
-            'potato': 0.7,      # Higher threshold - reduces false positives on random objects
-            'pumpkin': 0.5,
-            'garlic': 0.25      # Much lower threshold - helps detect garlic that's being missed
+            'pear': 0.6,
+            'tomato': 0.9,     # Higher threshold - reduces confusion with capsicum
+            'capsicum': 0.8,   # Higher threshold - reduces confusion with tomato
+            'potato': 0.9,      # Higher threshold - reduces false positives on random objects
+            'pumpkin': 0.6,
+            'garlic': 0.4      # Much lower threshold - helps detect garlic that's being missed
         }
         
         # Default threshold for classes not in the dictionary
@@ -125,24 +125,26 @@ if __name__ == '__main__':
     # get current script directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    yolo = Detector(f'{script_dir}/model/best (1).pt')
-    
-    # Example: Modify confidence thresholds for specific classes
-    yolo.set_class_confidence_threshold('tomato', 0.8)  # Make tomato detection more strict
-    yolo.set_class_confidence_threshold('pear', 0.3)    # Make pear detection more lenient
+    # init YOLO model
+    yolo = Detector(f'{script_dir}/model/yolov8_model.pt')
 
-    img = cv2.imread(f'{script_dir}/test/test_image_2.png')
+    # path to test folder
+    test_folder = f'{script_dir}/test'
 
-    bboxes, img_out = yolo.detect_single_image(img)
+    # loop through all files in test folder
+    for filename in os.listdir(test_folder):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg')):  # only image files
+            img_path = os.path.join(test_folder, filename)
+            img = cv2.imread(img_path)
 
-    print("Detected objects:")
-    for bbox in bboxes:
-        class_name = bbox[0]
-        confidence = bbox[2] if len(bbox) > 2 else "N/A"
-        threshold = yolo.get_class_confidence_threshold(class_name)
-        print(f"  {class_name}: confidence={confidence:.3f}, threshold={threshold}")
-    
-    print(f"Total detections: {len(bboxes)}")
+            bboxes, img_out = yolo.detect_single_image(img)
 
-    cv2.imshow('yolo detect', img_out)
-    cv2.waitKey(0)
+            print(f"\nFile: {filename}")
+            print(f" Detected {len(bboxes)} objects")
+            print(f" BBoxes: {bboxes}")
+
+            # show the result (press any key to continue to next image)
+            cv2.imshow('yolo detect', img_out)
+            cv2.waitKey(0)
+
+    cv2.destroyAllWindows()

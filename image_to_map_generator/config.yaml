@@ -3,7 +3,7 @@
 # ===============================================
 # Main params to modify
 # ===============================================
-input_image: 25.08_MAP.jpg
+input_image: 10_09_Map.jpg
 output_map_name: test_output.txt
 
 # a reference map to specify the objects (how many for each type) on the map
@@ -14,7 +14,7 @@ fruits: # BGR
   lemon: [0, 255, 255] # Yellow
   pumpkin: [0, 128, 255] # Orange  
   tomato: [0, 0, 255]  # Red
-  lime: [0, 102, 0] # Dark green
+  orange: [0, 102, 0] # Dark green
   garlic: [255, 255, 255] # White
   capsicum: [255, 255, 0] # Cyan
   potato: [0, 51, 102] # Dark brown
