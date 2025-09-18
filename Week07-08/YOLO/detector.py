@@ -24,14 +24,14 @@ class Detector:
         # Define confidence thresholds for each class
         # Adjusted based on common detection issues:
         self.class_confidence_thresholds = {
-            'orange': 0.4,
+            'orange': 0.7,
             'lemon': 0.75,      # Higher threshold - reduces false positives on random objects
-            'pear': 0.6,
+            'pear': 0.7,
             'tomato': 0.9,     # Higher threshold - reduces confusion with capsicum
             'capsicum': 0.8,   # Higher threshold - reduces confusion with tomato
             'potato': 0.9,      # Higher threshold - reduces false positives on random objects
             'pumpkin': 0.6,
-            'garlic': 0.4      # Much lower threshold - helps detect garlic that's being missed
+            'garlic': 0.7      # Much lower threshold - helps detect garlic that's being missed
         }
         
         # Default threshold for classes not in the dictionary

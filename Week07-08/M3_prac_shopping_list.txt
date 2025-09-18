@@ -2,4 +2,4 @@ garlic
 lemon
 pear
 tomato
-pumpkin
+orange
