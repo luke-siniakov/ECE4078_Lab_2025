@@ -42,7 +42,7 @@ class OccupancyGridMap:
     Layers:
       - obstacles (distractions + ArUco + any non-target in L3/L4)
       - targets
-    We inflate OBSTACLES ONLY for planning. Inflation radius fixed to 0.05 m, per request.
+    We inflate OBSTACLES ONLY for planning.
     """
     def __init__(self,
                  width_m: float,
@@ -53,7 +53,7 @@ class OccupancyGridMap:
                  p_occ: float = 0.70,
                  p_free: float = 0.30,
                  max_logodds: float = 5.0,
-                 inflation_radius_m: float = 0.12):  # <<< fixed 0.05 m
+                 inflation_radius_m: float = 0.12): 
         self.res = resolution
         self.W = int(np.ceil(width_m / resolution))
         self.H = int(np.ceil(height_m / resolution))
@@ -115,11 +115,10 @@ class OccupancyGridMap:
                                     out[nj, ni] = 1
         
         self.inflated_obstacles = out
-
     def get_obstacle_circles(self):
         """
         Export only INFLATED OBSTACLES (not targets) as collision circles for planning.
-        Targets should be reachable goals, not obstacles to avoid.
+        FIXED: Remove coordinate flip issue.
         """
         if self.inflated_obstacles is None:
             self.inflate_obstacles()
@@ -128,8 +127,8 @@ class OccupancyGridMap:
         r = self.inflation_radius_m
         for gy, gx in zip(ys, xs):
             x = self.ox + (gx + 0.5) * self.res
-            # Fix: flip the y-coordinate since array row 0 is at top, but world y increases upward
-            y = self.oy + (self.H - gy - 0.5) * self.res  # Flip y-axis
+            # FIXED: Use direct conversion, no coordinate flip
+            y = self.oy + (gy + 0.5) * self.res
             circles.append((x, y, r))
         return circles
 
@@ -302,141 +301,7 @@ class FruitSearch:
 
     def nearest_node(self, tree, sample):
         return min(tree, key=lambda node: hypot(node.x - sample[0], node.y - sample[1]))
-
-    def rrt_star_sequential_targets(self, start, targets, obstacles, x_limits, y_limits,
-                                max_iter=5000, step_size=0.15, goal_radius=0.15,
-                                rewire_radius=0.4, robot_radius=0.09, goal_bias=0.15):
-        """
-        Alternative implementation: RRT* that explicitly handles sequential targets.
-        This is a cleaner separation if you prefer to keep the multi-target logic separate.
-        """
-        if not targets:
-            return None
-            
-        tree = [start]
-        current_target_idx = 0
-        
-        for iteration in range(max_iter):
-            if current_target_idx >= len(targets):
-                # Success! Build path through all targets
-                final_target = Node(targets[-1][0], targets[-1][1])
-                closest = min(tree, key=lambda n: hypot(n.x - final_target.x, n.y - final_target.y))
-                if hypot(closest.x - final_target.x, closest.y - final_target.y) <= goal_radius:
-                    final_target.parent = closest
-                    path = []
-                    cur = final_target
-                    while cur:
-                        path.append([cur.x, cur.y])
-                        cur = cur.parent
-                    path.reverse()
-                    return path
-                break
-                
-            current_target = targets[current_target_idx]
-            goal = Node(current_target[0], current_target[1])
-            
-            # Standard RRT* expansion
-            if random.random() < goal_bias:
-                sx, sy = goal.x, goal.y
-            else:
-                sx = random.uniform(*x_limits)
-                sy = random.uniform(*y_limits)
-
-            nearest = min(tree, key=lambda node: hypot(node.x - sx, node.y - sy))
-            theta = atan2(sy - nearest.y, sx - nearest.x)
-            new_x = nearest.x + step_size * np.cos(theta)
-            new_y = nearest.y + step_size * np.sin(theta)
-            new_node = Node(new_x, new_y, parent=nearest)
-            new_node.cost = nearest.cost + step_size
-
-            if self.line_collision(nearest, new_node, obstacles, robot_radius):
-                continue
-
-            # RRT* rewiring
-            for node in tree:
-                if node == nearest:
-                    continue
-                if hypot(node.x - new_node.x, node.y - new_node.y) <= rewire_radius:
-                    if not self.line_collision(node, new_node, obstacles, robot_radius):
-                        new_cost = node.cost + hypot(node.x - new_node.x, node.y - new_node.y)
-                        if new_cost < new_node.cost:
-                            new_node.parent = node
-                            new_node.cost = new_cost
-
-            tree.append(new_node)
-
-            # Check if reached current target
-            if hypot(new_node.x - goal.x, new_node.y - goal.y) <= goal_radius:
-                current_target_idx += 1
-
-    def return_to_start(self):
-        """Drive straight back to (0,0)."""
-        self.drive_to_point([0.0, 0.0])
     
-    def get_target_aware_obstacles(self, current_target_coords):
-        """
-        Get obstacle circles but mark which ones might be targets we want to reach.
-        Returns regular obstacle list but can be used with smart collision detection.
-        """
-        all_obstacles = self.map.get_obstacle_circles()
-        
-        # Separate obstacles that are near our target coordinates
-        filtered_obstacles = []
-        target_tolerance = 0.15  # 15cm tolerance
-        
-        for obs in all_obstacles:
-            ox, oy, r = obs
-            is_target_obstacle = False
-            
-            # Check if this obstacle is near any of our target coordinates
-            if current_target_coords is not None:
-                target_dist = hypot(ox - current_target_coords[0], oy - current_target_coords[1])
-                if target_dist <= target_tolerance:
-                    is_target_obstacle = True
-            
-            if not is_target_obstacle:
-                filtered_obstacles.append(obs)
-        
-        return filtered_obstacles
-    
-    def line_collision_smart(self, p1, p2, obstacles, robot_radius=0.09, step=0.02, target_goal=None, tolerance=0.15):
-        """
-        Enhanced collision detection that ignores collisions with target locations when navigating toward them.
-        
-        Args:
-            p1, p2: Start and end nodes
-            obstacles: List of (x, y, r) obstacle circles
-            robot_radius: Robot clearance radius
-            step: Step size for line checking
-            target_goal: Current target coordinates [x, y] or None
-            tolerance: Distance within which to ignore target collisions
-        """
-        dx = p2.x - p1.x
-        dy = p2.y - p1.y
-        dist_total = hypot(dx, dy)
-        steps = max(2, int(dist_total / step))
-        
-        for i in range(steps + 1):
-            x = p1.x + dx * i / steps
-            y = p1.y + dy * i / steps
-            
-            for obs in obstacles:
-                ox, oy, r = obs
-                collision_dist = hypot(x - ox, y - oy)
-                
-                if collision_dist <= r + robot_radius:
-                    # Check if this collision is with a target we're trying to reach
-                    if target_goal is not None:
-                        target_dist = hypot(ox - target_goal[0], oy - target_goal[1])
-                        if target_dist <= tolerance:
-                            # This obstacle is likely the target we're navigating to - ignore collision
-                            continue
-                    
-                    # Real collision with non-target obstacle
-                    return True
-        return False
-
-
     ####################### Exploration Path ############################
     def generate_exploration_path(self, arena_size=(2.4, 2.4), step=0.6):
         """Generate a simple 'lawnmower' exploration path to cover the arena."""
@@ -473,15 +338,31 @@ class FruitSearch:
         # Keep full detection tuple so your pose estimator can use class/conf if needed
         return estimate_pose(self.camera_matrix, detection, robot_pose)
 
+    def get_fruit_name_at_target(self, target_index):
+        """
+        Get the name of the fruit at the given target index based on search list order.
+        
+        Args:
+            target_index: Index of the target in self.targets list
+        
+        Returns:
+            String name of the fruit, or "Unknown Fruit" if not found
+        """
+        if target_index < len(self.search_list):
+            return self.search_list[target_index]
+        else:
+            return "Unknown Fruit"
+
     ##################### Occupancy Map ############################
+
     def create_occupancy_map(self,
-                         level_number: int,
-                         fruit_list: list,
-                         fruit_true_pos: np.ndarray,
-                         aruco_true_pos: np.ndarray,
-                         search_list_path: str = "M3_prac_shopping_list.txt",
-                         fruit_radius_m: float = 0.08,
-                         marker_radius_m: float = 0.10):
+                        level_number: int,
+                        fruit_list: list,
+                        fruit_true_pos: np.ndarray,
+                        aruco_true_pos: np.ndarray,
+                        search_list_path: str = "M3_prac_shopping_list.txt",
+                        fruit_radius_m: float = 0.08,
+                        marker_radius_m: float = 0.10):
         """
         Build/refresh the occupancy according to the level.
         - Level 2: use GT map. Targets → target layer. Distractions + ArUco → obstacles layer.
@@ -491,7 +372,10 @@ class FruitSearch:
         """
         self.level_number = level_number
         self.search_list = self.read_search_list(search_list_path)
-
+        
+        # Store aruco positions for visualization
+        self.aruco_true_pos = aruco_true_pos
+        
         # Reset map
         ax, ay = self.arena_size
         self.map = OccupancyGridMap(width_m=ax, height_m=ay, resolution=0.05,
@@ -556,133 +440,620 @@ class FruitSearch:
 
 
         ##################### Path Planning ############################
+    
+    def get_all_obstacle_circles(self):
+        """
+        Get ALL obstacle circles including both obstacles AND targets for collision detection.
+        Both should be avoided during path planning since we approach targets from 0.3m away.
+        """
+        if self.map.inflated_obstacles is None:
+            self.map.inflate_obstacles()
+        
+        circles = []
+        r_obstacle = self.map.inflation_radius_m
+        
+        # Add inflated obstacles (distractions, ArUco markers, etc.)
+        ys, xs = np.where(self.map.inflated_obstacles > 0)
+        for gy, gx in zip(ys, xs):
+            x = self.map.ox + (gx + 0.5) * self.map.res
+            y = self.map.oy + (gy + 0.5) * self.map.res
+            circles.append((x, y, r_obstacle))
+        
+        # Add targets as obstacles too (they should be avoided during navigation)
+        target_ys, target_xs = np.where(self.map.L_targets > 0)
+        r_target = 0.12  # Slightly larger radius for targets to ensure clearance
+        for gy, gx in zip(target_ys, target_xs):
+            x = self.map.ox + (gx + 0.5) * self.map.res
+            y = self.map.oy + (gy + 0.5) * self.map.res
+            circles.append((x, y, r_target))
+        
+        return circles
+    
+    def calculate_pickup_points(self, pickup_distance=0.3):
+        """
+        Calculate pickup points for each target at specified distance.
+        Returns list of pickup points that are collision-free and accessible.
+        
+        Args:
+            pickup_distance: Distance to maintain from target center (0.3m)
+        
+        Returns:
+            List of [x, y] pickup points corresponding to each target
+        """
+        pickup_points = []
+        robot_radius = 0.09
+        
+        # Get all obstacles (including other targets) for collision checking pickup points
+        all_obstacles = self.get_all_obstacle_circles()
+        
+        for target in self.targets:
+            tx, ty = float(target[0]), float(target[1])
+            
+            # Try multiple angles around the target to find a good pickup point
+            best_point = None
+            min_obstacle_dist = 0
+            
+            # Test 8 directions around the target
+            for angle in np.linspace(0, 2*np.pi, 8, endpoint=False):
+                # Calculate potential pickup point
+                px = tx + pickup_distance * np.cos(angle)
+                py = ty + pickup_distance * np.sin(angle)
+                
+                # Check if pickup point is within arena bounds
+                if not (self.map.ox <= px <= self.map.ox + self.map.W * self.map.res and
+                        self.map.oy <= py <= self.map.oy + self.map.H * self.map.res):
+                    continue
+                
+                # Check collision with all obstacles (except the current target)
+                collision = False
+                min_dist_to_obstacle = float('inf')
+                
+                for obs_x, obs_y, obs_r in all_obstacles:
+                    # Skip collision check with the current target itself
+                    if abs(obs_x - tx) < 0.05 and abs(obs_y - ty) < 0.05:
+                        continue
+                    
+                    dist_to_obs = hypot(px - obs_x, py - obs_y)
+                    min_dist_to_obstacle = min(min_dist_to_obstacle, dist_to_obs)
+                    
+                    if dist_to_obs <= obs_r + robot_radius + 0.02:  # Small safety margin
+                        collision = True
+                        break
+                
+                if not collision and min_dist_to_obstacle > min_obstacle_dist:
+                    best_point = [px, py]
+                    min_obstacle_dist = min_dist_to_obstacle
+            
+            if best_point is not None:
+                pickup_points.append(best_point)
+                print(f"[INFO] Pickup point for target at ({tx:.3f}, {ty:.3f}): ({best_point[0]:.3f}, {best_point[1]:.3f})")
+            else:
+                # Fallback: use closest feasible point even if not optimal
+                fallback_angle = np.arctan2(ty, tx) + np.pi  # Point away from origin
+                px = tx + pickup_distance * np.cos(fallback_angle)
+                py = ty + pickup_distance * np.sin(fallback_angle)
+                pickup_points.append([px, py])
+                print(f"[WARN] Using fallback pickup point for target at ({tx:.3f}, {ty:.3f}): ({px:.3f}, {py:.3f})")
+        
+        return pickup_points
+
+    def smooth_path_preserve_pickups(self, path, pickup_points, robot_radius=0.09):
+        """
+        Smooth the path while preserving pickup points.
+        Only smooths segments between pickup points, never skips pickup points themselves.
+        
+        Args:
+            path: List of [x, y] waypoints
+            pickup_points: List of pickup point coordinates that must be preserved
+            robot_radius: Robot collision radius for safety checking
+        
+        Returns:
+            Smoothed path that still visits all pickup points
+        """
+        if len(path) <= 2:
+            return path
+        
+        print(f"[INFO] Smoothing path while preserving {len(pickup_points)} pickup points...")
+        print(f"[INFO] Original path: {len(path)} waypoints -> ", end="")
+        
+        obstacles = self.get_all_obstacle_circles()
+        
+        # Identify which waypoints are pickup points (with tolerance)
+        pickup_indices = []
+        for i, waypoint in enumerate(path):
+            for pickup_point in pickup_points:
+                distance = hypot(waypoint[0] - pickup_point[0], waypoint[1] - pickup_point[1])
+                if distance <= 0.15:  # 15cm tolerance
+                    pickup_indices.append(i)
+                    break
+        
+        # Always include start and end points
+        critical_indices = [0] + pickup_indices + [len(path) - 1]
+        critical_indices = sorted(list(set(critical_indices)))  # Remove duplicates and sort
+        
+        print(f"[DEBUG] Pickup points found at waypoint indices: {pickup_indices}")
+        print(f"[DEBUG] Critical waypoints to preserve: {critical_indices}")
+        
+        # Smooth segments between critical points
+        smoothed_path = []
+        
+        for i in range(len(critical_indices) - 1):
+            start_idx = critical_indices[i]
+            end_idx = critical_indices[i + 1]
+            
+            # Extract segment between critical points
+            segment = path[start_idx:end_idx + 1]
+            
+            if len(segment) <= 2:
+                # Short segment, just add as-is
+                if i == 0:
+                    smoothed_path.extend(segment)
+                else:
+                    smoothed_path.extend(segment[1:])  # Skip first point to avoid duplication
+            else:
+                # Smooth this segment
+                smoothed_segment = self.smooth_segment(segment, obstacles, robot_radius)
+                
+                if i == 0:
+                    smoothed_path.extend(smoothed_segment)
+                else:
+                    smoothed_path.extend(smoothed_segment[1:])  # Skip first point to avoid duplication
+        
+        print(f"{len(smoothed_path)} waypoints")
+        print(f"[INFO] Reduced waypoints by {len(path) - len(smoothed_path)} while preserving all pickup points")
+        
+        return smoothed_path
+
+    def smooth_segment(self, segment, obstacles, robot_radius):
+        """
+        Smooth a single path segment between two critical points.
+        """
+        if len(segment) <= 2:
+            return segment
+        
+        smoothed_segment = [segment[0]]  # Start with first point
+        current_index = 0
+        
+        while current_index < len(segment) - 1:
+            # Look ahead to find the furthest reachable waypoint
+            furthest_reachable = current_index + 1
+            
+            for look_ahead_index in range(current_index + 2, len(segment)):
+                # Check if we can go directly from current to look_ahead point
+                start_point = Node(segment[current_index][0], segment[current_index][1])
+                end_point = Node(segment[look_ahead_index][0], segment[look_ahead_index][1])
+                
+                # Test collision-free direct path
+                if not self.line_collision(start_point, end_point, obstacles, robot_radius):
+                    furthest_reachable = look_ahead_index
+                else:
+                    break  # Can't go further, use previous reachable point
+            
+            # Add the furthest reachable waypoint (skip intermediate ones)
+            if furthest_reachable != current_index:
+                smoothed_segment.append(segment[furthest_reachable])
+                current_index = furthest_reachable
+            else:
+                # If we can't skip any points, just advance by one
+                smoothed_segment.append(segment[current_index + 1])
+                current_index += 1
+        
+        return smoothed_segment
 
     def plan_path(self):
         """
-        Plan path to all current targets using RRT* with smart collision detection.
-        Visits targets sequentially and concatenates paths properly.
+        Plan path to pickup points near all targets, treating targets as obstacles.
+        Now includes SAFE path smoothing that preserves pickup points.
         """
         if not self.targets:
             print("[INFO] No targets to plan for.")
             self.path = []
             return
+        
+        # Calculate pickup points for all targets
+        pickup_points = self.calculate_pickup_points(pickup_distance=0.3)
+        
+        if len(pickup_points) != len(self.targets):
+            print("[ERROR] Could not calculate pickup points for all targets")
+            return
+        
+        print(f"[DEBUG] Planning path through {len(pickup_points)} pickup points")
+        print(f"[DEBUG] Robot starting position: {[self.pose[0], self.pose[1]]}")
+        
+        # Build full path by connecting start -> pickup1 -> pickup2 -> ... -> pickupN
+        full_path = [[self.pose[0], self.pose[1]]]  # Start with current position
+        
+        current_pos = [self.pose[0], self.pose[1]]
+        
+        for i, pickup_point in enumerate(pickup_points):
+            print(f"[INFO] Planning segment {i+1}/{len(pickup_points)}: {current_pos} -> {pickup_point}")
+            
+            # Plan single segment from current_pos to pickup_point
+            segment_path = self.plan_single_segment(current_pos, pickup_point)
+            
+            if segment_path is None:
+                print(f"[ERROR] Failed to find path to pickup point {i+1}")
+                return
+            
+            # Append segment (skip first point to avoid duplication)
+            if len(segment_path) > 1:
+                full_path.extend(segment_path[1:])  # Skip first point (duplicate)
+            
+            # Update current position for next segment
+            current_pos = pickup_point[:]
+        
+        print(f"[INFO] Raw path has {len(full_path)} waypoints")
+        
+        # SAFE path smoothing that preserves pickup points
+        smoothed_path = self.smooth_path_preserve_pickups(full_path, pickup_points)
+        
+        # Optional: Remove very short segments but preserve pickup points
+        final_path = self.optimize_path_preserve_pickups(smoothed_path, pickup_points, min_segment_length=0.05)
+        
+        self.path = final_path
+        print(f"[SUCCESS] Final optimized path has {len(self.path)} waypoints")
+        print(f"[SUCCESS] Waypoint reduction: {len(full_path)} -> {len(self.path)} ({((len(full_path) - len(self.path))/len(full_path)*100):.1f}% reduction)")
+        
+        # Verify pickup points are still in the path
+        self.verify_pickup_points_in_path(pickup_points)
+        
+        self.map_path()
 
-        # Map extents
+    def optimize_path_preserve_pickups(self, path, pickup_points, min_segment_length=0.05):
+        """
+        Remove very short segments while preserving pickup points.
+        """
+        if len(path) <= 2:
+            return path
+        
+        # Identify pickup point indices
+        pickup_indices = set()
+        for i, waypoint in enumerate(path):
+            for pickup_point in pickup_points:
+                distance = hypot(waypoint[0] - pickup_point[0], waypoint[1] - pickup_point[1])
+                if distance <= 0.15:  # 15cm tolerance
+                    pickup_indices.add(i)
+                    break
+        
+        optimized_path = [path[0]]  # Always keep start
+        
+        for i in range(1, len(path)):
+            # Always keep pickup points and final point
+            if i in pickup_indices or i == len(path) - 1:
+                optimized_path.append(path[i])
+                continue
+            
+            # For other points, check minimum distance
+            last_point = optimized_path[-1]
+            current_point = path[i]
+            distance = hypot(current_point[0] - last_point[0], 
+                            current_point[1] - last_point[1])
+            
+            if distance >= min_segment_length:
+                optimized_path.append(current_point)
+        
+        return optimized_path
+
+    def verify_pickup_points_in_path(self, pickup_points):
+        """
+        Verify that all pickup points are still reachable in the smoothed path.
+        """
+        print(f"[DEBUG] Verifying {len(pickup_points)} pickup points are in path...")
+        
+        for i, pickup_point in enumerate(pickup_points):
+            closest_distance = float('inf')
+            closest_waypoint_idx = -1
+            
+            for j, waypoint in enumerate(self.path):
+                distance = hypot(waypoint[0] - pickup_point[0], waypoint[1] - pickup_point[1])
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_waypoint_idx = j
+            
+            if closest_distance <= 0.2:  # 20cm tolerance
+                print(f"[DEBUG] Pickup point {i+1} OK - closest waypoint {closest_waypoint_idx} at {closest_distance:.3f}m")
+            else:
+                print(f"[ERROR] Pickup point {i+1} too far from path! Closest distance: {closest_distance:.3f}m")
+                # Add the pickup point back to the path
+                print(f"[FIX] Adding pickup point {i+1} back to path at position {closest_waypoint_idx+1}")
+                self.path.insert(closest_waypoint_idx + 1, pickup_point)
+
+    # Keep the improved RRT* parameters but make them less aggressive
+    def plan_single_segment(self, start_pos, goal_pos, max_iter=2500, step_size=0.10, 
+                        goal_radius=0.1, rewire_radius=0.25, goal_bias=0.3):
+        """
+        Plan a single path segment using RRT* with balanced parameters.
+        """
+        # Map extents for sampling
         x_limits = (self.map.ox, self.map.ox + self.map.W * self.map.res)
         y_limits = (self.map.oy, self.map.oy + self.map.H * self.map.res)
         robot_radius = 0.09
-        map_obstacles = self.map.get_obstacle_circles()
-
-        print(f"[DEBUG] Robot starting position: {[self.pose[0], self.pose[1]]}")
-        print(f"[DEBUG] Number of targets: {len(self.targets)}")
-        print(f"[DEBUG] First target: {self.targets[0]}")
-        print(f"[DEBUG] Total obstacle circles: {len(map_obstacles)}")
-
-        # RRT* parameters
-        max_iter = 8000
-        step_size = 0.025
-        goal_radius = 0.25
-        rewire_radius = 0.3
-        goal_bias = 0.3
-
-        tree = [Node(self.pose[0], self.pose[1])]
-        successful_expansions = 0
-        collision_count = 0
-
-        current_target_idx = 0
-        while current_target_idx < len(self.targets) and max_iter > 0:
-            current_target = self.targets[current_target_idx]
-            goal = Node(float(current_target[0]), float(current_target[1]))
-
-            # Sample point with goal bias
+        
+        # Get ALL obstacle circles (obstacles AND targets)
+        obstacles = self.get_all_obstacle_circles()
+        
+        print(f"[DEBUG] Planning from {start_pos} to {goal_pos}")
+        print(f"[DEBUG] Using {len(obstacles)} obstacles for collision checking")
+        
+        # Initialize RRT* tree
+        start_node = Node(float(start_pos[0]), float(start_pos[1]))
+        goal_node = Node(float(goal_pos[0]), float(goal_pos[1]))
+        tree = [start_node]
+        
+        for iteration in range(max_iter):
+            # Sample point (goal biasing)
             if random.random() < goal_bias:
-                sx, sy = goal.x, goal.y
+                sx, sy = goal_node.x, goal_node.y
             else:
                 sx = random.uniform(*x_limits)
                 sy = random.uniform(*y_limits)
-
-            # Find nearest node
-            nearest = self.nearest_node(tree, (sx, sy))
-
+            
+            # Find nearest node in tree
+            nearest = min(tree, key=lambda n: hypot(n.x - sx, n.y - sy))
+            
             # Extend toward sample
             theta = atan2(sy - nearest.y, sx - nearest.x)
             new_x = nearest.x + step_size * np.cos(theta)
             new_y = nearest.y + step_size * np.sin(theta)
-            new_node = Node(new_x, new_y, parent=nearest)
+            
+            # Create new node
+            new_node = Node(new_x, new_y)
+            new_node.parent = nearest
             new_node.cost = nearest.cost + step_size
-
-            # Smart collision check
-            if self.line_collision_smart(nearest, new_node, map_obstacles, robot_radius,
-                                        target_goal=[current_target[0], current_target[1]], tolerance=0.2):
-                collision_count += 1
-                max_iter -= 1
+            
+            # Collision check with ALL obstacles (including targets)
+            if self.line_collision(nearest, new_node, obstacles, robot_radius):
                 continue
-
-            successful_expansions += 1
-
-            # RRT* rewiring
+            
+            # RRT* rewiring: find better parent within rewire radius
             for node in tree:
                 if node == nearest:
                     continue
-                if self.dist(node, new_node) <= rewire_radius:
-                    if not self.line_collision_smart(node, new_node, map_obstacles, robot_radius,
-                                                    target_goal=[current_target[0], current_target[1]], tolerance=0.2):
-                        new_cost = node.cost + self.dist(node, new_node)
-                        if new_cost < new_node.cost:
+                dist_to_new = hypot(node.x - new_node.x, node.y - new_node.y)
+                if dist_to_new <= rewire_radius:
+                    # Check if this connection is collision-free
+                    if not self.line_collision(node, new_node, obstacles, robot_radius):
+                        potential_cost = node.cost + dist_to_new
+                        if potential_cost < new_node.cost:
                             new_node.parent = node
-                            new_node.cost = new_cost
-
+                            new_node.cost = potential_cost
+            
             tree.append(new_node)
-
-            # Check if target reached
-            if self.dist(new_node, goal) <= goal_radius:
-                print(f"[SUCCESS] Reached target {current_target_idx + 1}/{len(self.targets)} at {current_target}")
-                current_target_idx += 1
-
-            if successful_expansions % 500 == 0:
-                print(f"[DEBUG] Iterations remaining: {max_iter}, target index: {current_target_idx}, tree size: {len(tree)}")
-            max_iter -= 1
-
-        # Build full path sequentially through all targets
-        full_path = [[self.pose[0], self.pose[1]]]
-        last_node = Node(self.pose[0], self.pose[1])
-
-        for target in self.targets:
-            goal_node = Node(float(target[0]), float(target[1]))
-            # Find closest node to previous target/starting point
-            closest = min(tree, key=lambda n: self.dist(n, last_node))
             
-            # Trace path from closest to goal
-            segment = []
-            cur = goal_node
-            while cur is not None and cur != closest:
-                segment.append([cur.x, cur.y])
-                cur = cur.parent
-            segment.append([closest.x, closest.y])
-            segment.reverse()
+            # Check if goal is reachable
+            dist_to_goal = hypot(new_node.x - goal_node.x, new_node.y - goal_node.y)
+            if dist_to_goal <= goal_radius:
+                # Try to connect to goal
+                if not self.line_collision(new_node, goal_node, obstacles, robot_radius):
+                    goal_node.parent = new_node
+                    goal_node.cost = new_node.cost + dist_to_goal
+                    
+                    # Reconstruct path
+                    path = []
+                    current = goal_node
+                    while current is not None:
+                        path.append([current.x, current.y])
+                        current = current.parent
+                    path.reverse()
+                    
+                    print(f"[SUCCESS] Found path with {len(path)} points in {iteration+1} iterations")
+                    return path
             
-            # Avoid duplicates at connection points
-            if full_path[-1] == segment[0]:
-                segment = segment[1:]
-            
-            full_path.extend(segment)
-            last_node = goal_node
-
-        self.path = full_path
-        print(f"[INFO] Full path with {len(self.path)} waypoints ready")
-        print(self.path)
-        self.map_path()
+            # Progress logging
+            if (iteration + 1) % 1000 == 0:
+                print(f"[DEBUG] RRT* iteration {iteration+1}/{max_iter}, tree size: {len(tree)}")
+        
+        print(f"[ERROR] No path found after {max_iter} iterations")
+        return None
 
         ###################### Path Following ############################
-    def drive_to_point(self, waypoint):
+    
+    def drive_to_point_with_ekf_updates(self, waypoint):
         """
-        Drive the robot to a specific waypoint by turning first and then driving straight.
-        Updates self.pose after each movement.
+        Enhanced version that updates EKF during movement for better accuracy.
+        Use this version if you want continuous pose tracking during navigation.
+        """
+        # Get current pose from EKF
+        current_ekf_pose = self.get_robot_pose()
+        x, y, theta = current_ekf_pose[0], current_ekf_pose[1], current_ekf_pose[2]
+        self.pose = current_ekf_pose.copy()
+        
+        dx = waypoint[0] - x
+        dy = waypoint[1] - y
+        desired_theta = math.atan2(dy, dx)
+        heading_error = self.wrap_angle(desired_theta - theta)
+        distance = math.hypot(dx, dy)
 
+        if distance < 0.02:
+            print(f"[INFO] Already at waypoint [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+            return
+
+        print(f"[INFO] Navigating: [{x:.3f}, {y:.3f}] -> [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+
+        # Calibration parameters
+        scale = self.scale
+        baseline = self.baseline
+        wheel_vel = 25
+
+        # Turn phase with EKF updates
+        if abs(heading_error) > 0.05:  # ~3 degrees
+            print(f"[INFO] Turning {math.degrees(heading_error):.1f}°")
+            
+            turn_rate = 2 * wheel_vel * scale / baseline
+            turn_time = abs(heading_error) / turn_rate
+            turn_direction = 1 if heading_error > 0 else 0
+            
+            # Start turning
+            start_time = time.time()
+            self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=0)
+            
+            # Monitor turn progress with EKF updates
+            while time.time() - start_time < turn_time:
+                # Get camera image and process for EKF updates
+                try:
+                    img = self.ppi.get_image()
+                    if img is not None:
+                        # Look for ArUco markers to update EKF
+                        lms, aruco_img = aruco.detect_marker_positions(img, self.camera_matrix, self.dist_coeffs)
+                        if len(lms) > 0:
+                            self.ekf.add_landmarks(lms)
+                            self.ekf.update(lms)
+                except:
+                    pass  # Continue even if camera/ArUco processing fails
+                
+                time.sleep(0.05)  # Small delay between updates
+            
+            # Stop turning
+            self.ppi.set_velocity([0, 0], tick=0, time=0)
+            time.sleep(0.2)  # Let robot settle
+
+        # Drive phase with EKF updates
+        updated_pose = self.get_robot_pose()
+        x, y, theta = updated_pose[0], updated_pose[1], updated_pose[2]
+        dx = waypoint[0] - x
+        dy = waypoint[1] - y
+        distance = math.hypot(dx, dy)
+
+        if distance > 0.02:
+            print(f"[INFO] Driving {distance:.3f}m")
+            
+            drive_speed = wheel_vel * scale
+            drive_time = distance / drive_speed
+            
+            # Start driving
+            start_time = time.time()
+            self.ppi.set_velocity([1, 0], tick=wheel_vel, time=0)
+            
+            # Monitor drive progress with EKF updates
+            while time.time() - start_time < drive_time:
+                # Process encoder data for EKF prediction step
+                try:
+                    # You might need to adapt this based on your EKF implementation
+                    # self.ekf.predict(drive_meas)  # Add drive measurements if available
+                    
+                    # Process camera for landmark updates
+                    img = self.ppi.get_image()
+                    if img is not None:
+                        lms, aruco_img = aruco.detect_marker_positions(img, self.camera_matrix, self.dist_coeffs)
+                        if len(lms) > 0:
+                            self.ekf.add_landmarks(lms)
+                            self.ekf.update(lms)
+                except:
+                    pass
+                
+                time.sleep(0.1)
+            
+            # Stop driving
+            self.ppi.set_velocity([0, 0], tick=0, time=0)
+            time.sleep(0.1)
+
+        # Final pose update
+        self.pose = self.get_robot_pose().copy()
+        final_distance = math.hypot(waypoint[0] - self.pose[0], waypoint[1] - self.pose[1])
+        
+        print(f"[INFO] Arrived at [{self.pose[0]:.3f}, {self.pose[1]:.3f}], error: {final_distance:.3f}m")
+    
+    def follow_path_ekf(self, dt=0.1):
+        """
+        Follow the planned path using EKF-enhanced navigation with SLAM updates.
+        Detects pickup points and performs fruit collection behavior with target facing.
+        Uses drive_to_point_with_ekf_updates for better pose accuracy.
+        """
+        if not self.path:
+            print("[INFO] No path to follow.")
+            return
+        
+        # Calculate pickup points to know where to stop for collection
+        pickup_points = []
+        if self.targets:
+            pickup_points = self.calculate_pickup_points(pickup_distance=0.3)
+        
+        print(f"[INFO] Following path with EKF/SLAM - {len(self.path)} waypoints")
+        print(f"[INFO] Will collect {len(pickup_points)} fruits during path execution")
+        
+        current_target_index = 0  # Track which target we're approaching
+        
+        for i, waypoint in enumerate(self.path):
+            # Drive to the waypoint using EKF-enhanced navigation
+            self.drive_to_point_with_ekf_updates(waypoint)
+            
+            # Wait 1 second at each waypoint for stability
+            time.sleep(1.0)
+            
+            # Check if this waypoint is a pickup point
+            is_pickup_point = False
+            closest_pickup_idx = -1
+            
+            if current_target_index < len(pickup_points):
+                pickup_point = pickup_points[current_target_index]
+                
+                # Check if current waypoint is close to the pickup point (within 0.1m tolerance)
+                distance_to_pickup = hypot(waypoint[0] - pickup_point[0], 
+                                        waypoint[1] - pickup_point[1])
+                
+                if distance_to_pickup <= 0.1:  # Close enough to pickup point
+                    is_pickup_point = True
+                    closest_pickup_idx = current_target_index
+            
+            # Also check if we're close to any pickup point (in case path smoothing affected order)
+            if not is_pickup_point:
+                for pickup_idx, pickup_point in enumerate(pickup_points):
+                    if pickup_idx < current_target_index:  # Already collected
+                        continue
+                        
+                    distance_to_pickup = hypot(waypoint[0] - pickup_point[0], 
+                                            waypoint[1] - pickup_point[1])
+                    
+                    if distance_to_pickup <= 0.15:  # Slightly larger tolerance for fallback
+                        is_pickup_point = True
+                        closest_pickup_idx = pickup_idx
+                        current_target_index = pickup_idx  # Update to correct index
+                        break
+            
+            # If we're at a pickup point, perform fruit collection behavior
+            if is_pickup_point and closest_pickup_idx >= 0:
+                fruit_name = self.get_fruit_name_at_target(closest_pickup_idx)
+                target_pos = self.targets[closest_pickup_idx]
+                
+                print(f"\n{'='*60}")
+                print(f"[FRUIT COLLECTION - EKF] Arrived at pickup point {closest_pickup_idx + 1}/{len(pickup_points)}")
+                print(f"[FRUIT COLLECTION - EKF] Collecting: {fruit_name}")
+                print(f"[FRUIT COLLECTION - EKF] Target position: [{target_pos[0]:.3f}, {target_pos[1]:.3f}]")
+                print(f"[FRUIT COLLECTION - EKF] Pickup position: [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+                print(f"{'='*60}")
+                
+                # Face the target before collecting (uses EKF pose internally)
+                self.face_target_for_collection_EKF(target_pos, fruit_name)
+                
+                # Look at the fruit for 5 seconds to "collect" it
+                print(f"[FRUIT COLLECTION - EKF] Looking at {fruit_name} for 5 seconds to collect...")
+                time.sleep(5.0)
+                
+                print(f"[FRUIT COLLECTION - EKF] Successfully collected {fruit_name}!")
+                print(f"[FRUIT COLLECTION - EKF] Remaining fruits: {len(pickup_points) - closest_pickup_idx - 1}\n")
+                
+                # Move to next target
+                current_target_index = closest_pickup_idx + 1
+            
+            # Progress update for regular waypoints
+            elif i % 10 == 0 or i == len(self.path) - 1:  # Every 10 waypoints or last waypoint
+                ekf_pose = self.get_robot_pose()
+                print(f"[INFO] EKF Progress: waypoint {i+1}/{len(self.path)}, EKF pose: [{ekf_pose[0]:.3f}, {ekf_pose[1]:.3f}, {ekf_pose[2]:.3f}]")
+        
+        print(f"\n[SUCCESS] EKF path following complete!")
+        print(f"[SUCCESS] Collected all {len(pickup_points)} fruits from the shopping list using EKF/SLAM")
+
+    def drive_to_point_simple(self, waypoint):
+        """
+        Drive the robot to a specific waypoint WITHOUT EKF updates.
+        Uses simple mathematical pose updates for testing purposes.
+        
         Args:
             waypoint : [x, y] target coordinates
         """
-        x, y, theta = self.pose
+        # Use internal pose tracking (no EKF)
+        x, y, theta = self.pose[0], self.pose[1], self.pose[2]
+        
         dx = waypoint[0] - x
         dy = waypoint[1] - y
 
@@ -691,53 +1062,296 @@ class FruitSearch:
         heading_error = self.wrap_angle(desired_theta - theta)
         distance = math.hypot(dx, dy)
 
-        if distance < 1e-3:
-            print(f"[INFO] Already at waypoint [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+        if distance < 0.02:  # Increased tolerance for practical navigation
+            print(f"[INFO] Already at waypoint [{waypoint[0]:.3f}, {waypoint[1]:.3f}] (within 2cm)")
             return
+
+        print(f"[INFO] Simple nav: [{x:.3f}, {y:.3f}, {theta:.3f}] -> Target: [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+        print(f"[INFO] Distance: {distance:.3f}m, Required turn: {heading_error:.3f} rad ({math.degrees(heading_error):.1f}°)")
 
         # --- Calibration parameters ---
         scale = self.scale
         baseline = self.baseline
-        wheel_vel = 30  # ticks/sec
+        wheel_vel = 25  # Reduced speed for better accuracy
 
-        # --- Turn on the spot ---
-        turn_rate = 2 * wheel_vel * scale / baseline  # rad/s
-        turn_time = abs(heading_error) / turn_rate
-        turn_direction = 1 if heading_error > 0 else 0
-        print(f"[INFO] Turning {heading_error:.3f} rad for {turn_time:.2f} s")
-        print(heading_error)
-        self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=turn_time)
-
-        # --- Update heading after turn ---
-        theta = self.wrap_angle(theta + heading_error)
+        # --- Turn on the spot (only if significant heading error) ---
+        min_turn_threshold = 0.05  # ~3 degrees minimum turn
+        if abs(heading_error) > min_turn_threshold:
+            turn_rate = 2 * wheel_vel * scale / baseline  # rad/s
+            turn_time = abs(heading_error) / turn_rate
+            turn_direction = 1 if heading_error > 0 else 0
+            
+            print(f"[INFO] Simple turning {heading_error:.3f} rad ({math.degrees(heading_error):.1f}°) for {turn_time:.2f} s")
+            self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=turn_time)
+            
+            # Let the robot settle after turning
+            time.sleep(0.2)
+            
+            # Update heading mathematically (no EKF)
+            theta += heading_error  # Simple mathematical update
+            theta = self.wrap_angle(theta)
+            
+            print(f"[INFO] After turn - mathematical heading: {theta:.3f} rad ({math.degrees(theta):.1f}°)")
+        else:
+            print(f"[INFO] Heading error {math.degrees(heading_error):.1f}° below threshold, skipping turn")
 
         # --- Drive straight ---
-        drive_speed = wheel_vel * scale  # m/s approx
-        drive_time = distance / drive_speed
-        print(f"[INFO] Driving straight {distance:.3f} m for {drive_time:.2f} s")
-        self.ppi.set_velocity([1, 0], tick=wheel_vel, time=drive_time)
+        # Recalculate distance after potential pose update
+        dx = waypoint[0] - x
+        dy = waypoint[1] - y
+        distance = math.hypot(dx, dy)
+        
+        if distance > 0.02:  # Only drive if still far enough
+            drive_speed = wheel_vel * scale  # m/s approx
+            drive_time = distance / drive_speed
+            
+            print(f"[INFO] Simple driving straight {distance:.3f}m for {drive_time:.2f}s at {drive_speed:.3f}m/s")
+            self.ppi.set_velocity([1, 0], tick=wheel_vel, time=drive_time)
+            
+            # Let the robot settle after driving
+            time.sleep(0.1)
+            
+            # Update position mathematically (no EKF)
+            x += distance * np.cos(theta)
+            y += distance * np.sin(theta)
 
-        # --- Update position after drive ---
-        x = waypoint[0]
-        y = waypoint[1]
+        # --- Update internal pose mathematically ---
+        self.pose[0] = x
+        self.pose[1] = y
+        self.pose[2] = theta
+        
+        # Verify we reached the target
+        final_distance = math.hypot(waypoint[0] - x, waypoint[1] - y)
+        
+        print(f"[INFO] Simple nav final pose: [{x:.3f}, {y:.3f}, {theta:.3f}]")
+        print(f"[INFO] Distance to target: {final_distance:.3f}m")
+        
+        if final_distance > 0.1:  # Warn if we're far from target
+            print(f"[WARN] Large positioning error! Expected: [{waypoint[0]:.3f}, {waypoint[1]:.3f}], Got: [{x:.3f}, {y:.3f}]")
 
-        # --- Save updated pose ---
-        self.pose = np.array([x, y, theta])
-        print(f"[INFO] Arrived at waypoint [{x:.3f}, {y:.3f}], heading {theta:.3f} rad")
-
-
-
-
-    def follow_path(self, dt=0.1):
+    def follow_path_simple(self, dt=0.1):
         """
-        Follow the planned path using drive_to_point for each waypoint.
-        Updates self.pose after each waypoint.
+        Follow the planned path using simple mathematical pose updates (no EKF/SLAM).
+        Detects pickup points and performs fruit collection behavior with target facing.
+        Uses drive_to_point_simple for testing purposes without EKF complexity.
         """
-        for waypoint in self.path:
-            # Drive to the waypoint
-            self.drive_to_point(waypoint)
+        if not self.path:
+            print("[INFO] No path to follow.")
+            return
+        
+        # Calculate pickup points to know where to stop for collection
+        pickup_points = []
+        if self.targets:
+            pickup_points = self.calculate_pickup_points(pickup_distance=0.3)
+        
+        print(f"[INFO] Following path with simple navigation - {len(self.path)} waypoints")
+        print(f"[INFO] Will collect {len(pickup_points)} fruits during path execution")
+        
+        current_target_index = 0  # Track which target we're approaching
+        
+        for i, waypoint in enumerate(self.path):
+            # Drive to the waypoint using simple navigation
+            self.drive_to_point_simple(waypoint)
+            
+            # Wait 1 second at each waypoint for simplicity
+            time.sleep(1.0)
+            
+            # Check if this waypoint is a pickup point
+            is_pickup_point = False
+            closest_pickup_idx = -1
+            
+            if current_target_index < len(pickup_points):
+                pickup_point = pickup_points[current_target_index]
+                
+                # Check if current waypoint is close to the pickup point (within 0.1m tolerance)
+                distance_to_pickup = hypot(waypoint[0] - pickup_point[0], 
+                                        waypoint[1] - pickup_point[1])
+                
+                if distance_to_pickup <= 0.1:  # Close enough to pickup point
+                    is_pickup_point = True
+                    closest_pickup_idx = current_target_index
+            
+            # Also check if we're close to any pickup point (in case path smoothing affected order)
+            if not is_pickup_point:
+                for pickup_idx, pickup_point in enumerate(pickup_points):
+                    if pickup_idx < current_target_index:  # Already collected
+                        continue
+                        
+                    distance_to_pickup = hypot(waypoint[0] - pickup_point[0], 
+                                            waypoint[1] - pickup_point[1])
+                    
+                    if distance_to_pickup <= 0.15:  # Slightly larger tolerance for fallback
+                        is_pickup_point = True
+                        closest_pickup_idx = pickup_idx
+                        current_target_index = pickup_idx  # Update to correct index
+                        break
+            
+            # If we're at a pickup point, perform fruit collection behavior
+            if is_pickup_point and closest_pickup_idx >= 0:
+                fruit_name = self.get_fruit_name_at_target(closest_pickup_idx)
+                target_pos = self.targets[closest_pickup_idx]
+                
+                print(f"\n{'='*60}")
+                print(f"[FRUIT COLLECTION - SIMPLE] Arrived at pickup point {closest_pickup_idx + 1}/{len(pickup_points)}")
+                print(f"[FRUIT COLLECTION - SIMPLE] Collecting: {fruit_name}")
+                print(f"[FRUIT COLLECTION - SIMPLE] Target position: [{target_pos[0]:.3f}, {target_pos[1]:.3f}]")
+                print(f"[FRUIT COLLECTION - SIMPLE] Pickup position: [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+                print(f"{'='*60}")
+                
+                # Face the target before collecting (modified to use simple pose)
+                self.face_target_for_collection_simple(target_pos, fruit_name)
+                
+                # Look at the fruit for 5 seconds to "collect" it
+                print(f"[FRUIT COLLECTION - SIMPLE] Looking at {fruit_name} for 5 seconds to collect...")
+                time.sleep(5.0)
+                
+                print(f"[FRUIT COLLECTION - SIMPLE] Successfully collected {fruit_name}!")
+                print(f"[FRUIT COLLECTION - SIMPLE] Remaining fruits: {len(pickup_points) - closest_pickup_idx - 1}\n")
+                
+                # Move to next target
+                current_target_index = closest_pickup_idx + 1
+            
+            # Progress update for regular waypoints
+            elif i % 10 == 0 or i == len(self.path) - 1:  # Every 10 waypoints or last waypoint
+                print(f"[INFO] Simple Progress: waypoint {i+1}/{len(self.path)}, pose: [{self.pose[0]:.3f}, {self.pose[1]:.3f}, {self.pose[2]:.3f}]")
+        
+        print(f"\n[SUCCESS] Simple path following complete!")
+        print(f"[SUCCESS] Collected all {len(pickup_points)} fruits from the shopping list using simple navigation")
 
-
+    def face_target_for_collection_simple(self, target_pos, fruit_name):
+        """
+        Turn the robot to face the target fruit for collection using simple pose tracking.
+        
+        Args:
+            target_pos: np.array([x, y]) position of the target
+            fruit_name: string name of the fruit being collected
+        """
+        # Use internal pose tracking (no EKF)
+        robot_x, robot_y, robot_theta = self.pose[0], self.pose[1], self.pose[2]
+        
+        # Calculate required heading to face the target
+        target_x, target_y = float(target_pos[0]), float(target_pos[1])
+        dx = target_x - robot_x
+        dy = target_y - robot_y
+        
+        required_heading = math.atan2(dy, dx)
+        heading_error = self.wrap_angle(required_heading - robot_theta)
+        
+        distance_to_target = math.hypot(dx, dy)
+        
+        print(f"[TARGET FACING - SIMPLE] Current robot pose: [{robot_x:.3f}, {robot_y:.3f}, {robot_theta:.3f}]")
+        print(f"[TARGET FACING - SIMPLE] Target {fruit_name} at: [{target_x:.3f}, {target_y:.3f}]")
+        print(f"[TARGET FACING - SIMPLE] Distance to target: {distance_to_target:.3f}m")
+        print(f"[TARGET FACING - SIMPLE] Required heading: {required_heading:.3f} rad ({math.degrees(required_heading):.1f}°)")
+        print(f"[TARGET FACING - SIMPLE] Current heading: {robot_theta:.3f} rad ({math.degrees(robot_theta):.1f}°)")
+        print(f"[TARGET FACING - SIMPLE] Heading error: {heading_error:.3f} rad ({math.degrees(heading_error):.1f}°)")
+        
+        # Turn to face target if heading error is significant
+        min_facing_threshold = 0.02  # ~1 degree - more precise for "looking"
+        
+        if abs(heading_error) > min_facing_threshold:
+            print(f"[TARGET FACING - SIMPLE] Turning to face {fruit_name}...")
+            
+            # Calibration parameters
+            scale = self.scale
+            baseline = self.baseline
+            wheel_vel = 20  # Slower speed for precise aiming
+            
+            turn_rate = 2 * wheel_vel * scale / baseline  # rad/s
+            turn_time = abs(heading_error) / turn_rate
+            turn_direction = 1 if heading_error > 0 else 0
+            
+            print(f"[TARGET FACING - SIMPLE] Executing precise turn: {heading_error:.3f} rad for {turn_time:.2f}s")
+            self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=turn_time)
+            
+            # Let robot settle after precise turn
+            time.sleep(0.3)
+            
+            # Update heading mathematically (no EKF)
+            final_theta = robot_theta + heading_error
+            final_theta = self.wrap_angle(final_theta)
+            final_error = self.wrap_angle(required_heading - final_theta)
+            
+            print(f"[TARGET FACING - SIMPLE] Final heading: {final_theta:.3f} rad ({math.degrees(final_theta):.1f}°)")
+            print(f"[TARGET FACING - SIMPLE] Final error: {final_error:.3f} rad ({math.degrees(final_error):.1f}°)")
+            
+            if abs(final_error) <= 0.05:  # ~3 degrees tolerance
+                print(f"[TARGET FACING - SIMPLE] ✓ Successfully facing {fruit_name}")
+            else:
+                print(f"[TARGET FACING - SIMPLE] ⚠ Large aiming error: {math.degrees(final_error):.1f}° - may need recalibration")
+            
+            # Update internal pose tracking
+            self.pose[2] = final_theta
+        else:
+            print(f"[TARGET FACING - SIMPLE] ✓ Already facing {fruit_name} (error: {math.degrees(heading_error):.1f}°)")
+    
+    def face_target_for_collection_EKF(self, target_pos, fruit_name):
+        """
+        Turn the robot to face the target fruit for collection using EKF pose tracking.
+        
+        Args:
+            target_pos: np.array([x, y]) position of the target
+            fruit_name: string name of the fruit being collected
+        """
+        # Get current robot pose from EKF
+        current_pose = self.get_robot_pose()
+        robot_x, robot_y, robot_theta = current_pose[0], current_pose[1], current_pose[2]
+        
+        # Calculate required heading to face the target
+        target_x, target_y = float(target_pos[0]), float(target_pos[1])
+        dx = target_x - robot_x
+        dy = target_y - robot_y
+        
+        required_heading = math.atan2(dy, dx)
+        heading_error = self.wrap_angle(required_heading - robot_theta)
+        
+        distance_to_target = math.hypot(dx, dy)
+        
+        print(f"[TARGET FACING - EKF] Current robot pose: [{robot_x:.3f}, {robot_y:.3f}, {robot_theta:.3f}]")
+        print(f"[TARGET FACING - EKF] Target {fruit_name} at: [{target_x:.3f}, {target_y:.3f}]")
+        print(f"[TARGET FACING - EKF] Distance to target: {distance_to_target:.3f}m")
+        print(f"[TARGET FACING - EKF] Required heading: {required_heading:.3f} rad ({math.degrees(required_heading):.1f}°)")
+        print(f"[TARGET FACING - EKF] Current heading: {robot_theta:.3f} rad ({math.degrees(robot_theta):.1f}°)")
+        print(f"[TARGET FACING - EKF] Heading error: {heading_error:.3f} rad ({math.degrees(heading_error):.1f}°)")
+        
+        # Turn to face target if heading error is significant
+        min_facing_threshold = 0.02  # ~1 degree - more precise for "looking"
+        
+        if abs(heading_error) > min_facing_threshold:
+            print(f"[TARGET FACING - EKF] Turning to face {fruit_name}...")
+            
+            # Calibration parameters
+            scale = self.scale
+            baseline = self.baseline
+            wheel_vel = 20  # Slower speed for precise aiming
+            
+            turn_rate = 2 * wheel_vel * scale / baseline  # rad/s
+            turn_time = abs(heading_error) / turn_rate
+            turn_direction = 1 if heading_error > 0 else 0
+            
+            print(f"[TARGET FACING - EKF] Executing precise turn: {heading_error:.3f} rad for {turn_time:.2f}s")
+            self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=turn_time)
+            
+            # Let robot settle after precise turn
+            time.sleep(0.3)
+            
+            # Verify final heading using EKF
+            final_pose = self.get_robot_pose()
+            final_theta = final_pose[2]
+            final_error = self.wrap_angle(required_heading - final_theta)
+            
+            print(f"[TARGET FACING - EKF] Final heading: {final_theta:.3f} rad ({math.degrees(final_theta):.1f}°)")
+            print(f"[TARGET FACING - EKF] Final error: {final_error:.3f} rad ({math.degrees(final_error):.1f}°)")
+            
+            if abs(final_error) <= 0.05:  # ~3 degrees tolerance
+                print(f"[TARGET FACING - EKF] ✓ Successfully facing {fruit_name}")
+            else:
+                print(f"[TARGET FACING - EKF] ⚠ Large aiming error: {math.degrees(final_error):.1f}° - may need recalibration")
+            
+            # Update internal pose tracking
+            self.pose = final_pose.copy()
+        else:
+            print(f"[TARGET FACING - EKF] ✓ Already facing {fruit_name} (error: {math.degrees(heading_error):.1f}°)")
     # ====== Helper to process detections during exploration ======
     def process_detections_update_map(self, detections):
         """
@@ -792,21 +1406,17 @@ class FruitSearch:
 
 
         ###################### Path Visualization / Mapping ############################
+   
     def map_path(self):
         """
-        Save the semantic occupancy map and planned path to a PNG file.
-        - ArUcos shown in blue squares
-        - Targets shown in green dots
-        - Distractions/obstacles shown in red dots
-        - Planned path shown as a black line with points
+        Enhanced visualization showing pickup points and target positions.
         """
-
         if not self.path:
             print("[INFO] No path to save.")
             return
 
-        fig, ax = plt.subplots(figsize=(5, 5))
-        ax.set_title("Semantic Map + Planned Path")
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.set_title("Semantic Map + Planned Path + Pickup Points")
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
 
@@ -820,24 +1430,36 @@ class FruitSearch:
             ys, xs = np.where(self.map.L_obstacles > 0)
             ox = self.map.ox + (xs + 0.5) * self.map.res
             oy = self.map.oy + (ys + 0.5) * self.map.res
-            ax.scatter(ox, oy, c="red", s=15, label="Obstacles/Distractions")
+            ax.scatter(ox, oy, c="red", s=15, label="Obstacles/Distractions", alpha=0.7)
 
-        # --- plot TARGETS in green ---
+        # --- plot TARGETS in green circles (showing they should be avoided) ---
         if np.any(self.map.L_targets > 0):
             ys, xs = np.where(self.map.L_targets > 0)
             tx = self.map.ox + (xs + 0.5) * self.map.res
             ty = self.map.oy + (ys + 0.5) * self.map.res
-            ax.scatter(tx, ty, c="green", s=15, label="Targets")
+            ax.scatter(tx, ty, c="green", s=30, label="Target Fruits", alpha=0.8)
 
-        # --- plot ARUCO markers in blue ---
+        # --- plot PICKUP POINTS in blue ---
+        if hasattr(self, 'targets') and self.targets:
+            pickup_points = self.calculate_pickup_points(pickup_distance=0.3)
+            if pickup_points:
+                pickup_x = [p[0] for p in pickup_points]
+                pickup_y = [p[1] for p in pickup_points]
+                ax.scatter(pickup_x, pickup_y, c="blue", s=25, marker="^", label="Pickup Points", alpha=0.9)
+                
+                # Draw lines from targets to pickup points
+                for i, (target, pickup) in enumerate(zip(self.targets, pickup_points)):
+                    ax.plot([target[0], pickup[0]], [target[1], pickup[1]], 'b--', alpha=0.5, linewidth=1)
+
+        # --- plot ArUco markers in purple ---
         if hasattr(self, "aruco_true_pos") and self.aruco_true_pos is not None:
-            for (axu, ayu) in self.aruco_true_pos:
-                ax.scatter(axu, ayu, c="blue", s=40, marker="s", label="ArUco")
+            ax.scatter(self.aruco_true_pos[:, 0], self.aruco_true_pos[:, 1], 
+                    c="purple", s=40, marker="s", label="ArUco", alpha=0.8)
 
         # --- plot PATH in black ---
         path_np = np.array(self.path)
         ax.plot(path_np[:, 0], path_np[:, 1], 'k-', lw=2, label="Planned Path")
-        ax.scatter(path_np[:, 0], path_np[:, 1], c="k", s=10)
+        ax.scatter(path_np[:, 0], path_np[:, 1], c="black", s=8, alpha=0.6)
 
         # Clean up legend duplicates
         handles, labels = ax.get_legend_handles_labels()
@@ -845,10 +1467,9 @@ class FruitSearch:
         ax.legend(unique.values(), unique.keys(), loc="best")
 
         plt.tight_layout()
-        plt.savefig("planned_path.png")
+        plt.savefig("planned_path.png", dpi=150)
         plt.close(fig)
         print("[INFO] Saved semantic map with path to planned_path.png")
-
 
     ###################### Occupancy Map Visualization ############################
     def map_occupancy(self, filename="occupancy_map.png"):
@@ -911,12 +1532,6 @@ class FruitSearch:
         print(f"[INFO] Saved detailed occupancy map to {filename}")
 
 
-
-
-# =========================
-# main loop
-# =========================
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser("Fruit searching")
     parser.add_argument("--level_number", type=int, default=3, help="Select which map to use for the corresponding level")
@@ -953,7 +1568,7 @@ if __name__ == "__main__":
         print("[INFO] Starting exploration to build map...")
         exploration_path = robot.generate_exploration_path(arena_size=robot.arena_size)  # simple coverage pattern
         for waypoint in exploration_path:
-            robot.drive_to_point(waypoint)
+            robot.drive_to_point_simple(waypoint)
 
             # detect and immediately fold into map (inflated to 0.05 m for planning)
             bboxes, img_out = robot.detect_fruits()
@@ -961,9 +1576,9 @@ if __name__ == "__main__":
 
         # Return to (0,0)
         print("[INFO] Returning to start position...")
-        robot.drive_to_point([0.0, 0.0])
+        robot.drive_to_point_simple([0.0, 0.0])
 
     # Plan with RRT* over the inflated occupancy (0.05 m radius)
     robot.plan_path()
     robot.map_path()
-    robot.follow_path()
+    robot.follow_path_simple()
