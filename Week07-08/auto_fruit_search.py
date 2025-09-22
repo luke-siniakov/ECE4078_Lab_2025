@@ -35,6 +35,14 @@ class Pose2D:
     def __init__(self, x: float, y: float, yaw: float = 0.0):
         self.x = float(x); self.y = float(y); self.yaw = float(yaw)
 
+class DriveMeasurement:
+    def __init__(self, left_speed, right_speed, dt, left_cov=0.1, right_cov=0.1):
+        self.left_speed = left_speed
+        self.right_speed = right_speed  
+        self.dt = dt
+        self.left_cov = left_cov
+        self.right_cov = right_cov
+
 class OccupancyGridMap:
     """
     Semantic log-odds occupancy grid with freespace carving and inflation.
@@ -53,7 +61,7 @@ class OccupancyGridMap:
                  p_occ: float = 0.70,
                  p_free: float = 0.30,
                  max_logodds: float = 5.0,
-                 inflation_radius_m: float = 0.12): 
+                 inflation_radius_m: float = 0.02): 
         self.res = resolution
         self.W = int(np.ceil(width_m / resolution))
         self.H = int(np.ceil(height_m / resolution))
@@ -115,22 +123,6 @@ class OccupancyGridMap:
                                     out[nj, ni] = 1
         
         self.inflated_obstacles = out
-    def get_obstacle_circles(self):
-        """
-        Export only INFLATED OBSTACLES (not targets) as collision circles for planning.
-        FIXED: Remove coordinate flip issue.
-        """
-        if self.inflated_obstacles is None:
-            self.inflate_obstacles()
-        ys, xs = np.where(self.inflated_obstacles > 0)
-        circles = []
-        r = self.inflation_radius_m
-        for gy, gx in zip(ys, xs):
-            x = self.ox + (gx + 0.5) * self.res
-            # FIXED: Use direct conversion, no coordinate flip
-            y = self.oy + (gy + 0.5) * self.res
-            circles.append((x, y, r))
-        return circles
 
     # --- object insertion (disc) ---
     def add_object(self, x: float, y: float, radius_m: float, is_target: bool):
@@ -193,6 +185,8 @@ class FruitSearch:
         self.dist_coeffs = np.loadtxt("calibration/param/distCoeffs.txt", delimiter=',')
         self.robot = Robot(self.baseline, self.scale, self.camera_matrix, self.dist_coeffs)
         self.ekf = EKF(self.robot)
+        self.ekf.P[0:3, 0:3] = np.eye(3) * 0.1  # Small initial uncertainty
+
 
         model_path = "YOLO\model\yolov8_model.pt"
         self.detector = Detector(model_path)
@@ -209,7 +203,7 @@ class FruitSearch:
         # Grid origin centered so +/- coordinates map naturally
         self.map = OccupancyGridMap(width_m=ax, height_m=ay, resolution=0.05,
                                     origin_x=-ax/2, origin_y=-ay/2,
-                                    inflation_radius_m=0.05)  # <<< fixed to 0.05 m
+                                    inflation_radius_m=0.02)  # <<< fixed to 0.05 m
         self.level_number = None
         self.search_list = []
 
@@ -282,9 +276,6 @@ class FruitSearch:
                         print('{}) {} at [{}, {}]'.format(n_fruit, fruit, np.round(fruit_true_pos[i][0], 1), np.round(fruit_true_pos[i][1], 1)))
                 n_fruit+=1
 
-    def dist(self,a, b):
-        return hypot(a.x - b.x, a.y - b.y)
-
     def line_collision(self, p1, p2, obstacles, robot_radius=0.09, step=0.02):
         dx = p2.x - p1.x
         dy = p2.y - p1.y
@@ -298,9 +289,6 @@ class FruitSearch:
                 if hypot(x-ox, y-oy) <= r + robot_radius:
                     return True
         return False
-
-    def nearest_node(self, tree, sample):
-        return min(tree, key=lambda node: hypot(node.x - sample[0], node.y - sample[1]))
     
     ####################### Exploration Path ############################
     def generate_exploration_path(self, arena_size=(2.4, 2.4), step=0.6):
@@ -441,34 +429,7 @@ class FruitSearch:
 
         ##################### Path Planning ############################
     
-    def get_all_obstacle_circles(self):
-        """
-        Get ALL obstacle circles including both obstacles AND targets for collision detection.
-        Both should be avoided during path planning since we approach targets from 0.3m away.
-        """
-        if self.map.inflated_obstacles is None:
-            self.map.inflate_obstacles()
-        
-        circles = []
-        r_obstacle = self.map.inflation_radius_m
-        
-        # Add inflated obstacles (distractions, ArUco markers, etc.)
-        ys, xs = np.where(self.map.inflated_obstacles > 0)
-        for gy, gx in zip(ys, xs):
-            x = self.map.ox + (gx + 0.5) * self.map.res
-            y = self.map.oy + (gy + 0.5) * self.map.res
-            circles.append((x, y, r_obstacle))
-        
-        # Add targets as obstacles too (they should be avoided during navigation)
-        target_ys, target_xs = np.where(self.map.L_targets > 0)
-        r_target = 0.12  # Slightly larger radius for targets to ensure clearance
-        for gy, gx in zip(target_ys, target_xs):
-            x = self.map.ox + (gx + 0.5) * self.map.res
-            y = self.map.oy + (gy + 0.5) * self.map.res
-            circles.append((x, y, r_target))
-        
-        return circles
-    
+    ################### Path Planning #########################
     def calculate_pickup_points(self, pickup_distance=0.3):
         """
         Calculate pickup points for each target at specified distance.
@@ -642,8 +603,8 @@ class FruitSearch:
 
     def plan_path(self):
         """
-        Plan path to pickup points near all targets, treating targets as obstacles.
-        Now includes SAFE path smoothing that preserves pickup points.
+        Simplified plan_path - removes duplicate fallback calls since plan_single_segment
+        already has built-in parameter adaptation and fallback strategies.
         """
         if not self.targets:
             print("[INFO] No targets to plan for.")
@@ -659,46 +620,251 @@ class FruitSearch:
         
         print(f"[DEBUG] Planning path through {len(pickup_points)} pickup points")
         print(f"[DEBUG] Robot starting position: {[self.pose[0], self.pose[1]]}")
+        print(f"[DEBUG] Pickup points: {pickup_points}")
+        
+        # Debug: check obstacle density around pickup points
+        obstacles = self.get_all_obstacle_circles()
+        print(f"[DEBUG] Total obstacles in map: {len(obstacles)}")
+        
+        # Analyze problematic segments
+        for i, pickup in enumerate(pickup_points):
+            if i > 0:  # Check segments between pickup points
+                prev_pickup = pickup_points[i-1]
+                segment_distance = hypot(pickup[0] - prev_pickup[0], pickup[1] - prev_pickup[1])
+                
+                # Count obstacles along this segment
+                obstacles_in_segment = 0
+                for ox, oy, r in obstacles:
+                    # Check if obstacle is near the line between pickup points
+                    # Simple distance to line segment check
+                    dist_to_segment = self.point_to_line_distance([ox, oy], prev_pickup, pickup)
+                    if dist_to_segment <= r + 0.2:  # Include buffer
+                        obstacles_in_segment += 1
+                
+                print(f"[DEBUG] Segment {i}: {prev_pickup} -> {pickup}")
+                print(f"[DEBUG] Segment {i}: distance {segment_distance:.3f}m, {obstacles_in_segment} blocking obstacles")
+                
+                if obstacles_in_segment > 50:  # High obstacle density
+                    print(f"[WARNING] Segment {i} has very high obstacle density!")
         
         # Build full path by connecting start -> pickup1 -> pickup2 -> ... -> pickupN
-        full_path = [[self.pose[0], self.pose[1]]]  # Start with current position
-        
+        full_path = [[self.pose[0], self.pose[1]]]
         current_pos = [self.pose[0], self.pose[1]]
         
         for i, pickup_point in enumerate(pickup_points):
             print(f"[INFO] Planning segment {i+1}/{len(pickup_points)}: {current_pos} -> {pickup_point}")
             
-            # Plan single segment from current_pos to pickup_point
+            # ONLY call plan_single_segment - it has built-in fallbacks
             segment_path = self.plan_single_segment(current_pos, pickup_point)
             
             if segment_path is None:
-                print(f"[ERROR] Failed to find path to pickup point {i+1}")
-                return
+                print(f"[ERROR] All planning methods failed for segment {i+1}")
+                print(f"[ERROR] This suggests the pickup point may be unreachable")
+                
+                # Try to find an alternative pickup point for this target
+                print(f"[INFO] Attempting to find alternative pickup point for target {i+1}")
+                alternative_pickup = self.find_alternative_pickup_point(self.targets[i], pickup_point)
+                
+                if alternative_pickup:
+                    print(f"[INFO] Found alternative pickup: {alternative_pickup}")
+                    segment_path = self.plan_single_segment(current_pos, alternative_pickup)
+                    pickup_point = alternative_pickup  # Update pickup point
+                
+                if segment_path is None:
+                    print(f"[FATAL] Cannot reach target {i+1} at all. Aborting path planning.")
+                    return
             
             # Append segment (skip first point to avoid duplication)
             if len(segment_path) > 1:
-                full_path.extend(segment_path[1:])  # Skip first point (duplicate)
+                full_path.extend(segment_path[1:])
             
             # Update current position for next segment
             current_pos = pickup_point[:]
+            print(f"[SUCCESS] Completed segment {i+1}/{len(pickup_points)}")
         
         print(f"[INFO] Raw path has {len(full_path)} waypoints")
         
-        # SAFE path smoothing that preserves pickup points
+        # Path optimization
         smoothed_path = self.smooth_path_preserve_pickups(full_path, pickup_points)
-        
-        # Optional: Remove very short segments but preserve pickup points
-        final_path = self.optimize_path_preserve_pickups(smoothed_path, pickup_points, min_segment_length=0.05)
+        final_path = self.optimize_path_preserve_pickups(smoothed_path, pickup_points)
         
         self.path = final_path
-        print(f"[SUCCESS] Final optimized path has {len(self.path)} waypoints")
-        print(f"[SUCCESS] Waypoint reduction: {len(full_path)} -> {len(self.path)} ({((len(full_path) - len(self.path))/len(full_path)*100):.1f}% reduction)")
+        print(f"[SUCCESS] Final path has {len(self.path)} waypoints")
+        print(f"[SUCCESS] Waypoint reduction: {len(full_path)} -> {len(self.path)}")
         
-        # Verify pickup points are still in the path
         self.verify_pickup_points_in_path(pickup_points)
-        
         self.map_path()
 
+    def point_to_line_distance(self, point, line_start, line_end):
+        """
+        Calculate perpendicular distance from point to line segment.
+        """
+        x0, y0 = point
+        x1, y1 = line_start
+        x2, y2 = line_end
+        
+        # Vector from line_start to line_end
+        dx = x2 - x1
+        dy = y2 - y1
+        
+        if dx == 0 and dy == 0:
+            # Line segment is a point
+            return hypot(x0 - x1, y0 - y1)
+        
+        # Parameter t that represents position along line segment
+        t = ((x0 - x1) * dx + (y0 - y1) * dy) / (dx * dx + dy * dy)
+        
+        # Clamp t to [0, 1] to stay on line segment
+        t = max(0, min(1, t))
+        
+        # Find closest point on line segment
+        closest_x = x1 + t * dx
+        closest_y = y1 + t * dy
+        
+        return hypot(x0 - closest_x, y0 - closest_y)
+
+    def find_alternative_pickup_point(self, target, original_pickup, max_attempts=16):
+        """
+        Find an alternative pickup point if the original one is unreachable.
+        """
+        tx, ty = float(target[0]), float(target[1])
+        pickup_distance = 0.35  # Slightly larger distance
+        
+        obstacles = self.get_all_obstacle_circles()
+        robot_radius = 0.08
+        
+        print(f"[DEBUG] Searching for alternative pickup point for target at ({tx:.3f}, {ty:.3f})")
+        
+        # Try more angles around the target
+        for angle in np.linspace(0, 2*np.pi, max_attempts, endpoint=False):
+            px = tx + pickup_distance * np.cos(angle)
+            py = ty + pickup_distance * np.sin(angle)
+            
+            # Check bounds
+            if not (self.map.ox <= px <= self.map.ox + self.map.W * self.map.res and
+                    self.map.oy <= py <= self.map.oy + self.map.H * self.map.res):
+                continue
+            
+            # Check collision with obstacles (except current target)
+            collision = False
+            for obs_x, obs_y, obs_r in obstacles:
+                # Skip the current target
+                if abs(obs_x - tx) < 0.05 and abs(obs_y - ty) < 0.05:
+                    continue
+                    
+                if hypot(px - obs_x, py - obs_y) <= obs_r + robot_radius + 0.05:
+                    collision = True
+                    break
+            
+            if not collision:
+                print(f"[SUCCESS] Alternative pickup found at ({px:.3f}, {py:.3f})")
+                return [px, py]
+        
+        print(f"[ERROR] No alternative pickup point found for target at ({tx:.3f}, {ty:.3f})")
+        return None
+
+        """
+        Enhanced plan_single_segment with more aggressive parameters and better debugging.
+        """
+        # Map extents for sampling
+        x_limits = (self.map.ox, self.map.ox + self.map.W * self.map.res)
+        y_limits = (self.map.oy, self.map.oy + self.map.H * self.map.res)
+        robot_radius = 0.07  # Further reduced robot radius
+        
+        # Get ALL obstacle circles
+        obstacles = self.get_all_obstacle_circles()
+        
+        print(f"[DEBUG] Planning from {start_pos} to {goal_pos}")
+        print(f"[DEBUG] Using {len(obstacles)} obstacles, robot radius: {robot_radius}")
+        
+        # Calculate direct distance for reference
+        direct_distance = hypot(goal_pos[0] - start_pos[0], goal_pos[1] - start_pos[1])
+        print(f"[DEBUG] Direct distance: {direct_distance:.3f}m")
+        
+        # Initialize RRT* tree
+        start_node = Node(float(start_pos[0]), float(start_pos[1]))
+        goal_node = Node(float(goal_pos[0]), float(goal_pos[1]))
+        
+        # More aggressive parameter sets
+        parameter_sets = [
+            # Very aggressive first attempt
+            {"max_iter": 2000, "step_size": 0.20, "goal_radius": 0.25, "rewire_radius": 0.4, "goal_bias": 0.5},
+            # Moderate parameters
+            {"max_iter": 3000, "step_size": 0.15, "goal_radius": 0.20, "rewire_radius": 0.35, "goal_bias": 0.4},
+            # Conservative parameters
+            {"max_iter": 4000, "step_size": 0.12, "goal_radius": 0.18, "rewire_radius": 0.3, "goal_bias": 0.3},
+            # Final attempt with maximum iterations
+            {"max_iter": 6000, "step_size": 0.10, "goal_radius": 0.30, "rewire_radius": 0.5, "goal_bias": 0.2}
+        ]
+        
+        for attempt, params in enumerate(parameter_sets):
+            print(f"[DEBUG] RRT* Attempt {attempt + 1}/{len(parameter_sets)} - {params}")
+            
+            tree = [start_node]
+            
+            for iteration in range(params["max_iter"]):
+                # Sample point with goal biasing
+                if random.random() < params["goal_bias"]:
+                    sx, sy = goal_node.x, goal_node.y
+                else:
+                    sx = random.uniform(*x_limits)
+                    sy = random.uniform(*y_limits)
+                
+                # Find nearest node
+                nearest = min(tree, key=lambda n: hypot(n.x - sx, n.y - sy))
+                
+                # Extend toward sample
+                theta = atan2(sy - nearest.y, sx - nearest.x)
+                new_x = nearest.x + params["step_size"] * np.cos(theta)
+                new_y = nearest.y + params["step_size"] * np.sin(theta)
+                
+                new_node = Node(new_x, new_y)
+                new_node.parent = nearest
+                new_node.cost = nearest.cost + params["step_size"]
+                
+                # Collision check
+                if self.line_collision(nearest, new_node, obstacles, robot_radius):
+                    continue
+                
+                # RRT* rewiring
+                for node in tree:
+                    if node == nearest:
+                        continue
+                    dist_to_new = hypot(node.x - new_node.x, node.y - new_node.y)
+                    if dist_to_new <= params["rewire_radius"]:
+                        if not self.line_collision(node, new_node, obstacles, robot_radius):
+                            potential_cost = node.cost + dist_to_new
+                            if potential_cost < new_node.cost:
+                                new_node.parent = node
+                                new_node.cost = potential_cost
+                
+                tree.append(new_node)
+                
+                # Check if goal is reachable
+                dist_to_goal = hypot(new_node.x - goal_node.x, new_node.y - goal_node.y)
+                if dist_to_goal <= params["goal_radius"]:
+                    if not self.line_collision(new_node, goal_node, obstacles, robot_radius):
+                        goal_node.parent = new_node
+                        goal_node.cost = new_node.cost + dist_to_goal
+                        
+                        # Reconstruct path
+                        path = []
+                        current = goal_node
+                        while current is not None:
+                            path.append([current.x, current.y])
+                            current = current.parent
+                        path.reverse()
+                        
+                        print(f"[SUCCESS] Path found: {len(path)} points in {iteration+1} iterations (attempt {attempt+1})")
+                        return path
+                
+                # Progress logging
+                if (iteration + 1) % 2000 == 0:
+                    print(f"[DEBUG] Attempt {attempt+1}, iteration {iteration+1}, tree size: {len(tree)}")
+        
+        print(f"[ERROR] All RRT* attempts failed after {len(parameter_sets)} tries")
+        return None
+    
     def optimize_path_preserve_pickups(self, path, pickup_points, min_segment_length=0.05):
         """
         Remove very short segments while preserving pickup points.
@@ -758,100 +924,170 @@ class FruitSearch:
                 print(f"[FIX] Adding pickup point {i+1} back to path at position {closest_waypoint_idx+1}")
                 self.path.insert(closest_waypoint_idx + 1, pickup_point)
 
-    # Keep the improved RRT* parameters but make them less aggressive
-    def plan_single_segment(self, start_pos, goal_pos, max_iter=2500, step_size=0.10, 
-                        goal_radius=0.1, rewire_radius=0.25, goal_bias=0.3):
+    def plan_single_segment(self, start_pos, goal_pos):
         """
-        Plan a single path segment using RRT* with balanced parameters.
+        Enhanced plan_single_segment with more aggressive parameters and better debugging.
         """
         # Map extents for sampling
         x_limits = (self.map.ox, self.map.ox + self.map.W * self.map.res)
         y_limits = (self.map.oy, self.map.oy + self.map.H * self.map.res)
-        robot_radius = 0.09
+        robot_radius = 0.07  # Further reduced robot radius
         
-        # Get ALL obstacle circles (obstacles AND targets)
+        # Get ALL obstacle circles
         obstacles = self.get_all_obstacle_circles()
         
         print(f"[DEBUG] Planning from {start_pos} to {goal_pos}")
-        print(f"[DEBUG] Using {len(obstacles)} obstacles for collision checking")
+        print(f"[DEBUG] Using {len(obstacles)} obstacles, robot radius: {robot_radius}")
+        
+        # Calculate direct distance for reference
+        direct_distance = hypot(goal_pos[0] - start_pos[0], goal_pos[1] - start_pos[1])
+        print(f"[DEBUG] Direct distance: {direct_distance:.3f}m")
         
         # Initialize RRT* tree
         start_node = Node(float(start_pos[0]), float(start_pos[1]))
         goal_node = Node(float(goal_pos[0]), float(goal_pos[1]))
-        tree = [start_node]
         
-        for iteration in range(max_iter):
-            # Sample point (goal biasing)
-            if random.random() < goal_bias:
-                sx, sy = goal_node.x, goal_node.y
-            else:
-                sx = random.uniform(*x_limits)
-                sy = random.uniform(*y_limits)
+        # More aggressive parameter sets
+        parameter_sets = [
+            # Very aggressive first attempt
+            {"max_iter": 2000, "step_size": 0.20, "goal_radius": 0.25, "rewire_radius": 0.4, "goal_bias": 0.5},
+            # Moderate parameters
+            {"max_iter": 3000, "step_size": 0.15, "goal_radius": 0.20, "rewire_radius": 0.35, "goal_bias": 0.4},
+            # Conservative parameters
+            {"max_iter": 4000, "step_size": 0.12, "goal_radius": 0.18, "rewire_radius": 0.3, "goal_bias": 0.3},
+            # Final attempt with maximum iterations
+            {"max_iter": 6000, "step_size": 0.10, "goal_radius": 0.30, "rewire_radius": 0.5, "goal_bias": 0.2}
+        ]
+        
+        for attempt, params in enumerate(parameter_sets):
+            print(f"[DEBUG] RRT* Attempt {attempt + 1}/{len(parameter_sets)} - {params}")
             
-            # Find nearest node in tree
-            nearest = min(tree, key=lambda n: hypot(n.x - sx, n.y - sy))
+            tree = [start_node]
             
-            # Extend toward sample
-            theta = atan2(sy - nearest.y, sx - nearest.x)
-            new_x = nearest.x + step_size * np.cos(theta)
-            new_y = nearest.y + step_size * np.sin(theta)
-            
-            # Create new node
-            new_node = Node(new_x, new_y)
-            new_node.parent = nearest
-            new_node.cost = nearest.cost + step_size
-            
-            # Collision check with ALL obstacles (including targets)
-            if self.line_collision(nearest, new_node, obstacles, robot_radius):
-                continue
-            
-            # RRT* rewiring: find better parent within rewire radius
-            for node in tree:
-                if node == nearest:
+            for iteration in range(params["max_iter"]):
+                # Sample point with goal biasing
+                if random.random() < params["goal_bias"]:
+                    sx, sy = goal_node.x, goal_node.y
+                else:
+                    sx = random.uniform(*x_limits)
+                    sy = random.uniform(*y_limits)
+                
+                # Find nearest node
+                nearest = min(tree, key=lambda n: hypot(n.x - sx, n.y - sy))
+                
+                # Extend toward sample
+                theta = atan2(sy - nearest.y, sx - nearest.x)
+                new_x = nearest.x + params["step_size"] * np.cos(theta)
+                new_y = nearest.y + params["step_size"] * np.sin(theta)
+                
+                new_node = Node(new_x, new_y)
+                new_node.parent = nearest
+                new_node.cost = nearest.cost + params["step_size"]
+                
+                # Collision check
+                if self.line_collision(nearest, new_node, obstacles, robot_radius):
                     continue
-                dist_to_new = hypot(node.x - new_node.x, node.y - new_node.y)
-                if dist_to_new <= rewire_radius:
-                    # Check if this connection is collision-free
-                    if not self.line_collision(node, new_node, obstacles, robot_radius):
-                        potential_cost = node.cost + dist_to_new
-                        if potential_cost < new_node.cost:
-                            new_node.parent = node
-                            new_node.cost = potential_cost
-            
-            tree.append(new_node)
-            
-            # Check if goal is reachable
-            dist_to_goal = hypot(new_node.x - goal_node.x, new_node.y - goal_node.y)
-            if dist_to_goal <= goal_radius:
-                # Try to connect to goal
-                if not self.line_collision(new_node, goal_node, obstacles, robot_radius):
-                    goal_node.parent = new_node
-                    goal_node.cost = new_node.cost + dist_to_goal
-                    
-                    # Reconstruct path
-                    path = []
-                    current = goal_node
-                    while current is not None:
-                        path.append([current.x, current.y])
-                        current = current.parent
-                    path.reverse()
-                    
-                    print(f"[SUCCESS] Found path with {len(path)} points in {iteration+1} iterations")
-                    return path
-            
-            # Progress logging
-            if (iteration + 1) % 1000 == 0:
-                print(f"[DEBUG] RRT* iteration {iteration+1}/{max_iter}, tree size: {len(tree)}")
+                
+                # RRT* rewiring
+                for node in tree:
+                    if node == nearest:
+                        continue
+                    dist_to_new = hypot(node.x - new_node.x, node.y - new_node.y)
+                    if dist_to_new <= params["rewire_radius"]:
+                        if not self.line_collision(node, new_node, obstacles, robot_radius):
+                            potential_cost = node.cost + dist_to_new
+                            if potential_cost < new_node.cost:
+                                new_node.parent = node
+                                new_node.cost = potential_cost
+                
+                tree.append(new_node)
+                
+                # Check if goal is reachable
+                dist_to_goal = hypot(new_node.x - goal_node.x, new_node.y - goal_node.y)
+                if dist_to_goal <= params["goal_radius"]:
+                    if not self.line_collision(new_node, goal_node, obstacles, robot_radius):
+                        goal_node.parent = new_node
+                        goal_node.cost = new_node.cost + dist_to_goal
+                        
+                        # Reconstruct path
+                        path = []
+                        current = goal_node
+                        while current is not None:
+                            path.append([current.x, current.y])
+                            current = current.parent
+                        path.reverse()
+                        
+                        print(f"[SUCCESS] Path found: {len(path)} points in {iteration+1} iterations (attempt {attempt+1})")
+                        return path
+                
+                # Progress logging
+                if (iteration + 1) % 2000 == 0:
+                    print(f"[DEBUG] Attempt {attempt+1}, iteration {iteration+1}, tree size: {len(tree)}")
         
-        print(f"[ERROR] No path found after {max_iter} iterations")
+        print(f"[ERROR] All RRT* attempts failed after {len(parameter_sets)} tries")
         return None
 
-        ###################### Path Following ############################
-    
+    def get_all_obstacle_circles(self):
+        """
+        Get ALL obstacle circles including both obstacles AND targets for collision detection.
+        Fixed coordinate system issues.
+        """
+        if self.map.inflated_obstacles is None:
+            self.map.inflate_obstacles()
+        
+        circles = []
+        r_obstacle = self.map.inflation_radius_m
+        
+        # Add inflated obstacles (distractions, ArUco markers, etc.)
+        ys, xs = np.where(self.map.inflated_obstacles > 0)
+        for gy, gx in zip(ys, xs):
+            # Fixed coordinate conversion
+            x = self.map.ox + (gx + 0.5) * self.map.res
+            y = self.map.oy + (gy + 0.5) * self.map.res
+            circles.append((x, y, r_obstacle))
+        
+        # Add targets as obstacles too but with larger radius for safety
+        target_ys, target_xs = np.where(self.map.L_targets > 0)
+        r_target = 0.15  # Increased radius for targets to ensure better clearance
+        for gy, gx in zip(target_ys, target_xs):
+            x = self.map.ox + (gx + 0.5) * self.map.res
+            y = self.map.oy + (gy + 0.5) * self.map.res
+            circles.append((x, y, r_target))
+        
+        print(f"[DEBUG] Generated {len(circles)} obstacle circles")
+        print(f"[DEBUG] Obstacle circles: {len(ys)} obstacles, {len(target_ys)} targets")
+        
+        return circles
+
+    def line_collision(self, p1, p2, obstacles, robot_radius=0.08, step=0.02):
+        """
+        Enhanced collision checking with debugging info for failed paths.
+        """
+        dx = p2.x - p1.x
+        dy = p2.y - p1.y
+        dist_total = hypot(dx, dy)
+        steps = max(2, int(dist_total / step))
+        
+        collision_points = []  # Track where collisions occur for debugging
+        
+        for i in range(steps+1):
+            x = p1.x + dx*i/steps
+            y = p1.y + dy*i/steps
+            for obs_idx, obs in enumerate(obstacles):
+                ox, oy, r = obs
+                collision_dist = hypot(x-ox, y-oy)
+                if collision_dist <= r + robot_radius:
+                    collision_points.append((x, y, ox, oy, collision_dist, r + robot_radius))
+                    return True
+        
+        return False
+
+    ############### Path following###########3
+
     def drive_to_point_with_ekf_updates(self, waypoint):
         """
-        Enhanced version that updates EKF during movement for better accuracy.
-        Use this version if you want continuous pose tracking during navigation.
+        Enhanced navigation with proper EKF prediction and update steps.
+        Uses both odometry (prediction) and landmarks (update) for pose tracking.
         """
         # Get current pose from EKF
         current_ekf_pose = self.get_robot_pose()
@@ -868,38 +1104,61 @@ class FruitSearch:
             print(f"[INFO] Already at waypoint [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
             return
 
-        print(f"[INFO] Navigating: [{x:.3f}, {y:.3f}] -> [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
+        print(f"[INFO] EKF Nav: [{x:.3f}, {y:.3f}] -> [{waypoint[0]:.3f}, {waypoint[1]:.3f}]")
 
         # Calibration parameters
         scale = self.scale
         baseline = self.baseline
         wheel_vel = 25
 
-        # Turn phase with EKF updates
+        # TURN PHASE with EKF prediction + update
         if abs(heading_error) > 0.05:  # ~3 degrees
-            print(f"[INFO] Turning {math.degrees(heading_error):.1f}°")
+            print(f"[INFO] EKF Turning {math.degrees(heading_error):.1f}°")
             
             turn_rate = 2 * wheel_vel * scale / baseline
             turn_time = abs(heading_error) / turn_rate
             turn_direction = 1 if heading_error > 0 else 0
             
+            # Create drive measurement for turning motion
+            left_speed = -wheel_vel if heading_error > 0 else wheel_vel
+            right_speed = wheel_vel if heading_error > 0 else -wheel_vel
+            
             # Start turning
             start_time = time.time()
             self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=0)
             
-            # Monitor turn progress with EKF updates
+            # Monitor turn with EKF updates
+            update_interval = 0.1  # Update every 100ms
+            last_update = start_time
+            
             while time.time() - start_time < turn_time:
-                # Get camera image and process for EKF updates
-                try:
-                    img = self.ppi.get_image()
-                    if img is not None:
-                        # Look for ArUco markers to update EKF
-                        lms, aruco_img = aruco.detect_marker_positions(img, self.camera_matrix, self.dist_coeffs)
-                        if len(lms) > 0:
-                            self.ekf.add_landmarks(lms)
-                            self.ekf.update(lms)
-                except:
-                    pass  # Continue even if camera/ArUco processing fails
+                current_time = time.time()
+                
+                # Create drive measurement for the time interval
+                dt = min(update_interval, turn_time - (current_time - start_time))
+                if dt > 0.01:  # Only predict if dt is meaningful
+                    drive_meas = DriveMeasurement(
+                        left_speed=left_speed,
+                        right_speed=right_speed,
+                        dt=dt
+                    )
+                    
+                    try:
+                        # EKF PREDICTION STEP (odometry)
+                        self.ekf.predict(drive_meas)
+                        
+                        # EKF UPDATE STEP (landmarks)
+                        img = self.ppi.get_image()
+                        if img is not None:
+                            lms, aruco_img = aruco.aruco_detector.detect_marker_positions(img)
+                            if len(lms) > 0:
+                                self.ekf.add_landmarks(lms)
+                                self.ekf.update(lms)
+                                print(f"[EKF] Updated with {len(lms)} landmarks")
+                    
+                    except Exception as e:
+                        print(f"[WARNING] EKF update failed: {e}")
+                        pass
                 
                 time.sleep(0.05)  # Small delay between updates
             
@@ -907,7 +1166,7 @@ class FruitSearch:
             self.ppi.set_velocity([0, 0], tick=0, time=0)
             time.sleep(0.2)  # Let robot settle
 
-        # Drive phase with EKF updates
+        # DRIVE PHASE with EKF prediction + update
         updated_pose = self.get_robot_pose()
         x, y, theta = updated_pose[0], updated_pose[1], updated_pose[2]
         dx = waypoint[0] - x
@@ -915,31 +1174,46 @@ class FruitSearch:
         distance = math.hypot(dx, dy)
 
         if distance > 0.02:
-            print(f"[INFO] Driving {distance:.3f}m")
+            print(f"[INFO] EKF Driving {distance:.3f}m")
             
             drive_speed = wheel_vel * scale
             drive_time = distance / drive_speed
             
-            # Start driving
+            # Start driving straight
             start_time = time.time()
             self.ppi.set_velocity([1, 0], tick=wheel_vel, time=0)
             
-            # Monitor drive progress with EKF updates
+            # Monitor drive with EKF updates
+            update_interval = 0.1  # Update every 100ms
+            
             while time.time() - start_time < drive_time:
-                # Process encoder data for EKF prediction step
-                try:
-                    # You might need to adapt this based on your EKF implementation
-                    # self.ekf.predict(drive_meas)  # Add drive measurements if available
+                current_time = time.time()
+                
+                # Create drive measurement for straight driving
+                dt = min(update_interval, drive_time - (current_time - start_time))
+                if dt > 0.01:  # Only predict if dt is meaningful
+                    drive_meas = DriveMeasurement(
+                        left_speed=wheel_vel,
+                        right_speed=wheel_vel,
+                        dt=dt
+                    )
                     
-                    # Process camera for landmark updates
-                    img = self.ppi.get_image()
-                    if img is not None:
-                        lms, aruco_img = aruco.detect_marker_positions(img, self.camera_matrix, self.dist_coeffs)
-                        if len(lms) > 0:
-                            self.ekf.add_landmarks(lms)
-                            self.ekf.update(lms)
-                except:
-                    pass
+                    try:
+                        # EKF PREDICTION STEP (odometry)
+                        self.ekf.predict(drive_meas)
+                        
+                        # EKF UPDATE STEP (landmarks)
+                        img = self.ppi.get_image()
+                        if img is not None:
+                            lms, aruco_img = aruco.aruco_detector.detect_marker_positions(img)
+                            if len(lms) > 0:
+                                self.ekf.add_landmarks(lms)
+                                self.ekf.update(lms)
+                                print(f"[EKF] Updated with {len(lms)} landmarks")
+                    
+                    except Exception as e:
+                        print(f"[WARNING] EKF update failed: {e}")
+                        pass
                 
                 time.sleep(0.1)
             
@@ -947,11 +1221,15 @@ class FruitSearch:
             self.ppi.set_velocity([0, 0], tick=0, time=0)
             time.sleep(0.1)
 
-        # Final pose update
+        # Final pose update and verification
         self.pose = self.get_robot_pose().copy()
         final_distance = math.hypot(waypoint[0] - self.pose[0], waypoint[1] - self.pose[1])
         
-        print(f"[INFO] Arrived at [{self.pose[0]:.3f}, {self.pose[1]:.3f}], error: {final_distance:.3f}m")
+        print(f"[INFO] EKF Final pose: [{self.pose[0]:.3f}, {self.pose[1]:.3f}, {self.pose[2]:.3f}]")
+        print(f"[INFO] Arrival error: {final_distance:.3f}m")
+        
+        if final_distance > 0.1:  # Warn if large error
+            print(f"[WARNING] Large positioning error! Target: [{waypoint[0]:.3f}, {waypoint[1]:.3f}], Actual: [{self.pose[0]:.3f}, {self.pose[1]:.3f}]")
     
     def follow_path_ekf(self, dt=0.1):
         """
@@ -1079,7 +1357,7 @@ class FruitSearch:
         if abs(heading_error) > min_turn_threshold:
             turn_rate = 2 * wheel_vel * scale / baseline  # rad/s
             turn_time = abs(heading_error) / turn_rate
-            turn_direction = 1 if heading_error > 0 else 0
+            turn_direction = 1 if heading_error > 0 else -1
             
             print(f"[INFO] Simple turning {heading_error:.3f} rad ({math.degrees(heading_error):.1f}°) for {turn_time:.2f} s")
             self.ppi.set_velocity([0, turn_direction], turning_tick=wheel_vel, time=turn_time)
@@ -1578,7 +1856,6 @@ if __name__ == "__main__":
         print("[INFO] Returning to start position...")
         robot.drive_to_point_simple([0.0, 0.0])
 
-    # Plan with RRT* over the inflated occupancy (0.05 m radius)
     robot.plan_path()
     robot.map_path()
     robot.follow_path_simple()
